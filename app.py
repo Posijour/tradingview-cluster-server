@@ -1,5 +1,6 @@
 # app.py
 import os, time, json, threading
+from datetime import datetime, timedelta
 from collections import deque
 from flask import Flask, request, jsonify
 import requests
@@ -148,8 +149,32 @@ def cluster_worker():
 
         time.sleep(CHECK_INTERVAL_SEC)
 
+# === 🩺 Автоматический ежедневный heartbeat ===
+def heartbeat_worker():
+    sent_today = None
+    while True:
+        try:
+            # текущее время UTC+2
+            now = datetime.utcnow() + timedelta(hours=2)
+            # проверяем, 03:00 ли сейчас
+            if now.hour == 3 and (sent_today != now.date()):
+                msg = (
+                    f"🩺 *Server heartbeat*\n"
+                    f"🕒 Time: {now.strftime('%H:%M %d-%m-%Y')} UTC+2\n"
+                    f"✅ Status: online and monitoring clusters.\n"
+                    f"📊 Cluster window: {CLUSTER_WINDOW_MIN} min | Threshold: {CLUSTER_THRESHOLD}"
+                )
+                send_telegram(msg)
+                sent_today = now.date()
+                print("✅ Daily heartbeat sent to Telegram.")
+        except Exception as e:
+            print("❌ heartbeat_worker error:", e)
+
+        time.sleep(60)  # проверяем раз в минуту
+
 # Запуск фонового анализа
 threading.Thread(target=cluster_worker, daemon=True).start()
+threading.Thread(target=heartbeat_worker, daemon=True).start()
 
 @app.route("/")
 def root():
@@ -167,6 +192,7 @@ def test_ping():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
