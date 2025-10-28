@@ -159,9 +159,15 @@ def root():
 def health():
     return "OK", 200
 
+@app.route("/test")
+def test_ping():
+    send_telegram("🧪 Test ping from Render server — connection OK.")
+    return "Test sent", 200
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
