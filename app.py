@@ -165,11 +165,38 @@ def cluster_emulator():
             print("❌ cluster_emulator error:", e)
         time.sleep(600)  # каждые 10 минут
 
-# Запуск фонового анализа
+# === ⏰ ЕЖЕДНЕВНЫЙ HEARTBEAT (Telegram ping в 03:00 UTC+2) ===
+def heartbeat_loop():
+    import datetime
 
+    sent_today = None
+    while True:
+        try:
+            # Текущее UTC время
+            now_utc = datetime.datetime.utcnow()
+            # Перевод в UTC+2
+            local_time = now_utc + datetime.timedelta(hours=2)
+
+            # Если 03:00 и еще не отправляли сегодня
+            if local_time.hour == 3 and (sent_today != local_time.date()):
+                msg = (
+                    f"🩵 *HEARTBEAT*\n"
+                    f"Server alive ✅\n"
+                    f"⏰ {local_time.strftime('%H:%M %d-%m-%Y')} UTC+2"
+                )
+                send_telegram(msg)
+                print("💬 Heartbeat sent to Telegram.")
+                sent_today = local_time.date()
+
+        except Exception as e:
+            print("❌ Heartbeat error:", e)
+
+        time.sleep(60)  # проверяем каждую минуту
+
+# Запуск фонового анализа
 threading.Thread(target=cluster_worker, daemon=True).start()
 threading.Thread(target=cluster_emulator, daemon=True).start()  # <— добавили
-
+threading.Thread(target=heartbeat_loop, daemon=True).start()
 
 @app.route("/")
 def root():
@@ -187,6 +214,7 @@ def test_ping():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
