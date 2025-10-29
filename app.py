@@ -149,8 +149,27 @@ def cluster_worker():
 
         time.sleep(CHECK_INTERVAL_SEC)
 
+# === 🧪 ЭМУЛЯТОР КЛАСТЕРНЫХ СИГНАЛОВ (для проверки работы без TradingView) ===
+def cluster_emulator():
+    tickers = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "AVAXUSDT"]
+    directions = ["UP", "DOWN"]
+    while True:
+        try:
+            now = time.time()
+            ticker = tickers[int(now) % len(tickers)]
+            direction = directions[int(now / 60) % 2]  # чередуем UP/DOWN
+            with lock:
+                signals.append((now, ticker, direction, VALID_TF))
+            print(f"🧪 Emulated {ticker} {direction} at {time.strftime('%H:%M:%S')}")
+        except Exception as e:
+            print("❌ cluster_emulator error:", e)
+        time.sleep(600)  # каждые 10 минут
+
 # Запуск фонового анализа
+
 threading.Thread(target=cluster_worker, daemon=True).start()
+threading.Thread(target=cluster_emulator, daemon=True).start()  # <— добавили
+
 
 @app.route("/")
 def root():
@@ -168,6 +187,7 @@ def test_ping():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
