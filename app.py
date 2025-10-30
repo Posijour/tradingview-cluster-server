@@ -485,6 +485,49 @@ def stats():
         return f"<h3>❌ Ошибка анализа: {e}</h3>", 500
 
 # =========================
+# 🧪 ЭМУЛЯТОР ТОРГОВОГО СИГНАЛА
+# =========================
+@app.route("/simulate", methods=["GET", "POST"])
+def simulate():
+    """
+    Эмулирует сигнал от TradingView.
+    Можно дернуть вручную в браузере или через curl/Postman.
+    Пример:
+      GET  /simulate?ticker=BTCUSDT&direction=UP&entry=68000&stop=67500&target=69000
+    """
+    try:
+        ticker = request.args.get("ticker", "BTCUSDT").upper()
+        direction = request.args.get("direction", "UP").upper()
+        entry = float(request.args.get("entry", 68000))
+        stop = float(request.args.get("stop", 67500))
+        target = float(request.args.get("target", 69000))
+        tf = request.args.get("tf", VALID_TF)
+
+        msg = (
+            f"📊 *SIMULATED SIGNAL*\n"
+            f"{ticker} {direction} ({tf})\n"
+            f"Entry: {entry}\nStop: {stop}\nTarget: {target}\n"
+            f"⏰ {datetime.utcnow().strftime('%H:%M:%S UTC')}"
+        )
+
+        # лог и телеграм
+        log_signal(ticker, direction, tf, "SIMULATED", entry, stop, target)
+        send_telegram(msg)
+
+        print(f"🧪 Simulated signal sent for {ticker} {direction}")
+        return jsonify({
+            "status": "ok",
+            "ticker": ticker,
+            "direction": direction,
+            "entry": entry,
+            "stop": stop,
+            "target": target,
+            "tf": tf
+        }), 200
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+# =========================
 # 🔎 HEALTH / TEST
 # =========================
 @app.route("/")
@@ -507,3 +550,4 @@ if __name__ == "__main__":
     threading.Thread(target=cluster_worker, daemon=True).start()
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=port)
+
