@@ -1,51 +1,25 @@
 # app.py
-import os, time, json, threading, csv
+import os, time, json, threading, csv, hmac, hashlib
 from datetime import datetime, timedelta
-from collections import deque
+from collections import deque, defaultdict
 from flask import Flask, request, jsonify
 import requests
-import hmac, hashlib
-from urllib.parse import urlencode
 
-# === 🔧 НАСТРОЙКИ ===
+# =========================
+# 🔧 НАСТРОЙКИ
+# =========================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 CHAT_ID        = os.getenv("CHAT_ID", "766363011")
 
-# === ПАРАМЕТРЫ КЛАСТЕРНОГО АНАЛИЗА ===
+# Кластеры
 CLUSTER_WINDOW_MIN = int(os.getenv("CLUSTER_WINDOW_MIN", "60"))   # окно X мин
 CLUSTER_THRESHOLD  = int(os.getenv("CLUSTER_THRESHOLD", "6"))     # N монет
 CHECK_INTERVAL_SEC = int(os.getenv("CHECK_INTERVAL_SEC", "60"))   # проверка раз в N сек
 VALID_TF = os.getenv("VALID_TF", "15m")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")                  # ?key=... для защиты
-
-# === ХРАНИЛИЩЕ СИГНАЛОВ ===
-signals = deque()  # элементы: (time, ticker, direction, tf)
-lock = threading.Lock()
-
-# Антидубль кластеров
-last_cluster_sent = {"UP": 0.0, "DOWN": 0.0}
 CLUSTER_COOLDOWN_SEC = int(os.getenv("CLUSTER_COOLDOWN_SEC", "300"))
 
-# === ПУТЬ К ЛОГУ ===
-LOG_FILE = "signals_log.csv"
-
-app = Flask(__name__)
-
-# === 📩 ФУНКЦИЯ ОТПРАВКИ В TELEGRAM ===
-def send_telegram(text: str):
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("⚠️ Telegram credentials missing.")
-        return
-    try:
-        requests.get(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            params={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"},
-            timeout=5,
-        )
-        print("✅ Sent to Telegram")
-    except Exception as e:
-        print("❌ Telegram error:", e)
-
+# Bybit (опционально)
 BYBIT_API_KEY    = os.getenv("BYBIT_API_KEY", "")
 BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET", "")
 BYBIT_BASE_URL   = os.getenv("BYBIT_BASE_URL", "https://api-testnet.bybit.com")
@@ -54,17 +28,63 @@ MAX_RISK_USDT    = float(os.getenv("MAX_RISK_USDT", "50"))
 LEVERAGE         = float(os.getenv("LEVERAGE", "5"))
 SYMBOL_WHITELIST = set(s.strip().upper() for s in os.getenv("SYMBOL_WHITELIST","").split(",") if s.strip())
 
-def _bybit_sign(payload: dict) -> tuple[dict, str]:
-    """
-    Формирует заголовки + подпись для v5 API.
-    """
+# Лог
+LOG_FILE = "signals_log.csv"  # единое имя используется везде
+
+# =========================
+# 🧠 ГЛОБАЛЬНЫЕ СТРУКТУРЫ
+# =========================
+signals = deque()  # элементы: (epoch_sec, ticker, direction, tf)
+lock = threading.Lock()
+last_cluster_sent = {"UP": 0.0, "DOWN": 0.0}
+
+app = Flask(__name__)
+
+# =========================
+# 📩 Telegram
+# =========================
+def send_telegram(text: str):
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        print("⚠️ Telegram credentials missing.")
+        return
+    try:
+        requests.get(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            params={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"},
+            timeout=8,
+        )
+        print("✅ Sent to Telegram")
+    except Exception as e:
+        print("❌ Telegram error:", e)
+
+# =========================
+# 📝 ЛОГИРОВАНИЕ
+# =========================
+def log_signal(ticker, direction, tf, sig_type):
+    """Сохраняем сигнал в CSV: time,ticker,direction,tf,type"""
+    try:
+        with open(LOG_FILE, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                ticker,
+                direction,
+                tf,
+                sig_type
+            ])
+        print(f"📝 Logged {sig_type} {ticker} {direction} {tf}")
+    except Exception as e:
+        print("❌ Log error:", e)
+
+# =========================
+# 🔐 BYBIT HELPERS (v5)
+# =========================
+def _bybit_sign(payload: dict):
     ts = str(int(time.time() * 1000))
     recv_window = "5000"
-    # Bybit v5: sign = HMAC_SHA256(apiSecret, timestamp + apiKey + recvWindow + body)
     body = json.dumps(payload) if payload else ""
     pre_sign = ts + BYBIT_API_KEY + recv_window + body
     sign = hmac.new(BYBIT_API_SECRET.encode(), pre_sign.encode(), hashlib.sha256).hexdigest()
-
     headers = {
         "X-BAPI-API-KEY": BYBIT_API_KEY,
         "X-BAPI-SIGN": sign,
@@ -88,10 +108,6 @@ def set_leverage(symbol: str, leverage: float):
     return bybit_post("/v5/position/set-leverage", payload)
 
 def calc_qty_from_risk(entry: float, stop: float, risk_usdt: float) -> float:
-    """
-    Для USDT-перпетуалов (contractValue=1): qty = risk / |entry-stop|
-    Округление до 6 знаков — большинство альтов поддерживают 3–6.
-    """
     risk_per_unit = abs(entry - stop)
     if risk_per_unit <= 0:
         return 0.0
@@ -99,10 +115,6 @@ def calc_qty_from_risk(entry: float, stop: float, risk_usdt: float) -> float:
     return float(f"{qty:.6f}")
 
 def place_order_market_with_tp_sl(symbol: str, side: str, qty: float, tp: float, sl: float):
-    """
-    MARKET вход + сразу TP/SL (tpSlMode=Full).
-    side: "Buy" или "Sell"
-    """
     payload = {
         "category": "linear",
         "symbol": symbol,
@@ -117,47 +129,33 @@ def place_order_market_with_tp_sl(symbol: str, side: str, qty: float, tp: float,
     }
     return bybit_post("/v5/order/create", payload)
 
-# === 📝 ЛОГИРОВАНИЕ СИГНАЛОВ ===
-def log_signal(ticker, direction, tf, sig_type):
-    """Сохраняем сигнал в CSV"""
-    try:
-        with open(LOG_FILE, "a", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-                ticker,
-                direction,
-                tf,
-                sig_type
-            ])
-        print(f"📝 Logged {sig_type} {ticker} {direction} {tf}")
-    except Exception as e:
-        print("❌ Log error:", e)
-
-# === 🔍 РАЗБОР ПОЛУЧЕННОГО PAYLOAD ===
+# =========================
+# 🔍 Парсер входящего payload
+# =========================
 def parse_payload(req) -> dict:
-    try:
-        data = request.get_json(silent=True) or {}
-    except:
-        data = {}
-    # если JSON пустой — пробуем как текст
+    # JSON
+    data = request.get_json(silent=True) or {}
+    # если пусто — пробуем распарсить raw
     if not data:
         raw = req.get_data(as_text=True) or ""
         try:
             data = json.loads(raw)
         except:
             data = {}
-
-    # нормализуем ключи
     return {
         "type": data.get("type", "").upper(),
         "ticker": data.get("ticker", ""),
         "direction": data.get("direction", "").upper(),
         "tf": data.get("tf", "").lower(),
         "message": data.get("message", ""),
+        "entry": data.get("entry"),
+        "stop": data.get("stop"),
+        "target": data.get("target"),
     }
 
-# === 🔔 ОБРАБОТКА ВЕБХУКОВ ОТ TRADINGVIEW ===
+# =========================
+# 🔔 ВЕБХУК ОТ TRADINGVIEW
+# =========================
 @app.route("/webhook", methods=["POST"])
 def webhook():
     if WEBHOOK_SECRET:
@@ -170,53 +168,12 @@ def webhook():
     tf  = payload.get("tf", "")
     msg = payload.get("message", "")
 
-    # 1️⃣ Если пришло сообщение с "message" — отправляем прямо в Telegram
+    # 1) MTF сигнал, приходящий с готовым текстом + (опц) ценами
     if msg:
         send_telegram(msg)
         print(f"📨 Forwarded MTF alert: {payload.get('ticker')} {payload.get('direction')}")
-            # 👉 Попытка автосделки по MTF-сигналу из TradingView
-    # Ожидаем от Pine JSON с полями: entry, stop, target (как в твоём сообщении)
-    # Если их нет — торгуем по рынку и считаем из сообщения сервера (ниже можно адаптировать)
-    if TRADE_ENABLED and typ == "MTF":
-        symbol    = payload.get("ticker","").upper()
-        direction = payload.get("direction","").upper()
-        tf_p      = payload.get("tf","").lower()
-        entry     = float(payload.get("entry", 0) or 0)
-        stop      = float(payload.get("stop", 0) or 0)
-        target    = float(payload.get("target", 0) or 0)
 
-        # Контртренд: MTF UP -> SHORT; MTF DOWN -> LONG (как у тебя)
-        side = "Sell" if direction == "UP" else "Buy"
-
-        # Защита: символ в белом списке?
-        if SYMBOL_WHITELIST and symbol not in SYMBOL_WHITELIST:
-            print(f"⛔ {symbol} не в белом списке — торговать запрещено")
-            return jsonify({"status":"ignored", "why":"symbol not whitelisted"}), 200
-
-        if entry > 0 and stop > 0 and target > 0:
-            try:
-                # 1) установка плеча (однократно, не ошибка если уже стоит)
-                set_leverage(symbol, LEVERAGE)
-
-                # 2) размер позиции от риска
-                qty = calc_qty_from_risk(entry, stop, MAX_RISK_USDT)
-                if qty <= 0:
-                    return jsonify({"status":"ignored", "why":"qty=0"}), 200
-
-                # 3) рыночный вход + TP/SL
-                #   Для LONG: side="Buy", tp>entry, sl<entry
-                #   Для SHORT: side="Sell", tp<entry, sl>entry
-                resp = place_order_market_with_tp_sl(symbol, side, qty, target, stop)
-                print("Bybit order resp:", resp)
-                send_telegram(f"🚀 *AUTO-TRADE*\n{symbol} {side}\nQty: {qty}\nEntry~{entry}\nTP: {target}\nSL: {stop}")
-                return jsonify({"status":"traded", "resp": resp}), 200
-            except Exception as e:
-                print("Trade error:", e)
-                return jsonify({"status":"trade_error","err":str(e)}), 200
-        else:
-            print("⛔ В пейлоаде нет цен entry/stop/target — пропуск автоторговли")
-
-        # при этом тоже добавляем в очередь для кластера
+        # Добавляем в очередь/лог для кластеров (если TF подходит)
         ticker    = payload.get("ticker", "")
         direction = payload.get("direction", "")
         if ticker and direction in ("UP", "DOWN") and tf == VALID_TF:
@@ -224,9 +181,37 @@ def webhook():
             with lock:
                 signals.append((now, ticker, direction, tf))
             log_signal(ticker, direction, tf, "MTF")
+
+        # Попытка автоторговли (если включена)
+        if TRADE_ENABLED and typ == "MTF":
+            try:
+                symbol    = ticker.upper() if ticker else ""
+                direction = direction.upper() if direction else ""
+
+                entry  = float(payload.get("entry") or 0)
+                stop   = float(payload.get("stop") or 0)
+                target = float(payload.get("target") or 0)
+
+                if not (symbol and direction in ("UP","DOWN")):
+                    print("⛔ Нет symbol/direction — пропуск торговли")
+                elif SYMBOL_WHITELIST and symbol not in SYMBOL_WHITELIST:
+                    print(f"⛔ {symbol} не в белом списке — пропуск")
+                elif entry > 0 and stop > 0 and target > 0:
+                    side = "Sell" if direction == "UP" else "Buy"  # контртренд
+                    set_leverage(symbol, LEVERAGE)
+                    qty = calc_qty_from_risk(entry, stop, MAX_RISK_USDT)
+                    if qty > 0:
+                        resp = place_order_market_with_tp_sl(symbol, side, qty, target, stop)
+                        print("Bybit order resp:", resp)
+                        send_telegram(f"🚀 *AUTO-TRADE*\n{symbol} {side}\nQty: {qty}\nEntry~{entry}\nTP: {target}\nSL: {stop}")
+                else:
+                    print("ℹ️ Нет entry/stop/target — автоторговля пропущена")
+            except Exception as e:
+                print("Trade error:", e)
+
         return jsonify({"status": "forwarded"}), 200
 
-    # 2️⃣ Старый формат (если message нет, но пришёл базовый сигнал)
+    # 2) Старый/минимальный формат (без message), но с type/dir/tf
     if typ == "MTF" and tf == VALID_TF:
         ticker    = payload.get("ticker", "")
         direction = payload.get("direction", "")
@@ -240,7 +225,9 @@ def webhook():
 
     return jsonify({"status": "ignored"}), 200
 
-# === 🧠 ФОНОВЫЙ КЛАСТЕРНЫЙ АНАЛИЗ ===
+# =========================
+# 🧠 КЛАСТЕР-ВОРКЕР
+# =========================
 def cluster_worker():
     while True:
         try:
@@ -256,7 +243,7 @@ def cluster_worker():
                     tickers_seen.add(t)
                     if d == "UP":
                         ups.add(t)
-                    if d == "DOWN":
+                    elif d == "DOWN":
                         downs.add(t)
 
             # UP кластер
@@ -288,15 +275,15 @@ def cluster_worker():
 
         time.sleep(CHECK_INTERVAL_SEC)
 
-# === ⏰ ЕЖЕДНЕВНЫЙ HEARTBEAT (Telegram ping в 03:00 UTC+2) ===
+# =========================
+# ⏰ ЕЖЕДНЕВНЫЙ HEARTBEAT (03:00 UTC+2)
+# =========================
 def heartbeat_loop():
-    import datetime
-
     sent_today = None
     while True:
         try:
-            now_utc = datetime.datetime.utcnow()
-            local_time = now_utc + datetime.timedelta(hours=2)
+            now_utc = datetime.utcnow()
+            local_time = now_utc + timedelta(hours=2)  # UTC+2
             if local_time.hour == 3 and (sent_today != local_time.date()):
                 msg = (
                     f"🩵 *HEARTBEAT*\n"
@@ -310,83 +297,114 @@ def heartbeat_loop():
             print("❌ Heartbeat error:", e)
         time.sleep(60)
 
-# === 🌐 ПРОСТОЙ DASHBOARD ===
+# =========================
+# 🌐 ПРОСТОЙ DASHBOARD
+# =========================
 @app.route("/dashboard")
 def dashboard():
     html = ["<h2>📈 Active Signals Dashboard</h2><table border='1' cellpadding='4'>"]
     html.append("<tr><th>Time (UTC)</th><th>Ticker</th><th>Direction</th><th>TF</th><th>Type</th></tr>")
     try:
         rows = []
-        with open(LOG_FILE, "r") as f:
-            for line in f.readlines()[-30:]:
-                t, ticker, direction, tf, sig_type = line.strip().split(",")
+        if os.path.exists(LOG_FILE):
+            with open(LOG_FILE, "r") as f:
+                lines = f.readlines()[-50:]
+            for line in lines:
+                parts = [p.strip() for p in line.strip().split(",")]
+                if len(parts) != 5:
+                    continue
+                t, ticker, direction, tf, sig_type = parts
                 rows.append(f"<tr><td>{t}</td><td>{ticker}</td><td>{direction}</td><td>{tf}</td><td>{sig_type}</td></tr>")
+        else:
+            rows.append("<tr><td colspan='5'>⚠️ No logs yet</td></tr>")
         html.extend(rows)
     except Exception as e:
-        html.append(f"<tr><td colspan='5'>⚠️ No logs yet ({e})</td></tr>")
+        html.append(f"<tr><td colspan='5'>⚠️ Error: {e}</td></tr>")
     html.append("</table><p style='color:gray'>Updated {}</p>".format(datetime.utcnow().strftime("%H:%M:%S UTC")))
     return "\n".join(html)
 
-import polars as pl
-import plotly.graph_objects as go
-from flask import render_template_string
-
+# =========================
+# 📊 ЛЁГКАЯ СТАТИСТИКА (без pandas)
+# =========================
 @app.route("/stats")
-def stats_page():
-    log_file = "signals.log"
-    if not os.path.exists(log_file):
-        return "<h3>No signal log file found.</h3>"
+def stats():
+    if not os.path.exists(LOG_FILE):
+        return "<h3>⚠️ Нет данных для анализа</h3>", 200
 
     try:
         # читаем CSV
-        df = pl.read_csv(log_file, has_header=False, new_columns=["time", "ticker", "direction", "tf"])
-        df = df.with_columns(pl.col("time").str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S"))
-        df = df.with_columns(df["time"].dt.date().alias("date"))
+        rows = []
+        with open(LOG_FILE, "r") as f:
+            for r in csv.reader(f):
+                if len(r) == 5:
+                    rows.append(r)
 
-        # считаем количество сигналов по дням и направлению
-        summary = (
-            df.group_by(["date", "direction"])
-              .agg(pl.count().alias("count"))
-              .sort("date")
+        # парсим и отбрасываем битые строки
+        parsed = []
+        for t, ticker, direction, tf, typ in rows:
+            try:
+                ts = datetime.strptime(t, "%Y-%m-%d %H:%M:%S")
+                parsed.append((ts, ticker, direction, tf, typ))
+            except:
+                continue
+
+        now = datetime.utcnow()
+        last_24h = now - timedelta(hours=24)
+        last_7d  = now - timedelta(days=7)
+
+        total = len(parsed)
+        total_24h = sum(1 for x in parsed if x[0] >= last_24h)
+        mtf = sum(1 for x in parsed if x[4] == "MTF")
+        cluster = sum(1 for x in parsed if x[4] == "CLUSTER")
+        up_count = sum(1 for x in parsed if x[2] == "UP")
+        down_count = sum(1 for x in parsed if x[2] == "DOWN")
+
+        # по дням/типам за 7 дней
+        daily = defaultdict(lambda: {"MTF":0, "CLUSTER":0})
+        for ts, _, _, _, typ in parsed:
+            if ts >= last_7d:
+                key = ts.date().isoformat()
+                if typ in ("MTF","CLUSTER"):
+                    daily[key][typ] += 1
+
+        daily_html = "".join(
+            f"<tr><td>{d}</td><td>{v['MTF']}</td><td>{v['CLUSTER']}</td></tr>"
+            for d, v in sorted(daily.items())
         )
 
-        up = summary.filter(pl.col("direction") == "UP")
-        down = summary.filter(pl.col("direction") == "DOWN")
-
-        fig = go.Figure()
-        fig.add_bar(x=up["date"], y=up["count"], name="UP", marker_color="green")
-        fig.add_bar(x=down["date"], y=down["count"], name="DOWN", marker_color="red")
-        fig.update_layout(
-            title="📊 Signals by Day",
-            xaxis_title="Date",
-            yaxis_title="Count",
-            template="plotly_dark",
-            barmode="group",
-            height=480,
-        )
-
-        chart_html = fig.to_html(full_html=False)
         html = f"""
-        <html><head><title>Stats</title></head>
-        <body style='background:#0d1117;color:#e6edf3;font-family:sans-serif;padding:20px;'>
-        <h2>📈 MTF & Cluster Signal Statistics</h2>
-        <p>Updated: {datetime.utcnow().strftime('%H:%M:%S UTC')}</p>
-        {chart_html}
-        </body></html>
+        <h2>📊 TradingView Signals Stats (7d)</h2>
+        <ul>
+          <li>Всего сигналов: <b>{total}</b></li>
+          <li>За 24 часа: <b>{total_24h}</b></li>
+          <li>MTF: <b>{mtf}</b> | Cluster: <b>{cluster}</b></li>
+          <li>Направление — 🟢 UP: <b>{up_count}</b> | 🔴 DOWN: <b>{down_count}</b></li>
+        </ul>
+        <h4>📅 По дням (последние 7):</h4>
+        <table border="1" cellpadding="4">
+          <tr><th>Дата (UTC)</th><th>MTF</th><th>CLUSTER</th></tr>
+          {daily_html if daily_html else '<tr><td colspan="3">Нет данных</td></tr>'}
+        </table>
+        <p style='color:gray'>Обновлено: {now.strftime("%H:%M:%S UTC")}</p>
         """
         return html
     except Exception as e:
-        return f"<pre>Error reading stats: {e}</pre>", 500
+        return f"<h3>❌ Ошибка анализа: {e}</h3>", 500
 
-# === ЗАПУСК ФОНОВЫХ ПОТОКОВ ===
+# =========================
+# 🧵 ФОНОВЫЕ ПОТОКИ
+# =========================
 threading.Thread(target=cluster_worker, daemon=True).start()
 threading.Thread(target=heartbeat_loop, daemon=True).start()
 
+# =========================
+# 🔎 HEALTH / TEST
+# =========================
 @app.route("/")
 def root():
     return "OK", 200
 
-@app.route("/health", methods=["GET"])
+@app.route("/health")
 def health():
     return "OK", 200
 
@@ -395,7 +413,9 @@ def test_ping():
     send_telegram("🧪 Test ping from Render server — connection OK.")
     return "Test sent", 200
 
+# =========================
+# 🚀 Запуск (локально)
+# =========================
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
-
