@@ -7,4 +7,4 @@ Flask==3.0.0
 gunicorn==21.2.0
 requests==2.31.0
 pandas==2.2.2
-matplotlib==3.9.2
+matplotlib==3.7.2
