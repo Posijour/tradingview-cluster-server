@@ -149,38 +149,6 @@ def cluster_worker():
 
         time.sleep(CHECK_INTERVAL_SEC)
 
-# === 🧪 ЭМУЛЯТОР КЛАСТЕРНЫХ СИГНАЛОВ (улучшенный) ===
-def cluster_emulator():
-    """
-    Генерирует тестовые сигналы для проверки кластера.
-    Можно выбрать частоту, направление и количество тикеров.
-    """
-    tickers = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "AVAXUSDT", "XRPUSDT", "LINKUSDT"]
-    
-    # Настройки
-    direction = "UP"           # фиксированное направление ("UP" или "DOWN")
-    signal_interval_sec = 120  # раз в 2 минуты
-    batch_size = 3             # сколько тикеров за один цикл добавлять
-
-    print("🧩 Cluster emulator started: direction =", direction)
-
-    while True:
-        try:
-            now = time.time()
-            selected = tickers[:batch_size]
-            with lock:
-                for t in selected:
-                    signals.append((now, t, direction, VALID_TF))
-                    print(f"🧪 Emulated {t} {direction} at {time.strftime('%H:%M:%S')}")
-            
-            # Немного сдвигаем список тикеров (для разнообразия)
-            tickers = tickers[batch_size:] + tickers[:batch_size]
-
-        except Exception as e:
-            print("❌ cluster_emulator error:", e)
-
-        time.sleep(signal_interval_sec)
-
 # === ⏰ ЕЖЕДНЕВНЫЙ HEARTBEAT (Telegram ping в 03:00 UTC+2) ===
 def heartbeat_loop():
     import datetime
@@ -211,7 +179,6 @@ def heartbeat_loop():
 
 # Запуск фонового анализа
 threading.Thread(target=cluster_worker, daemon=True).start()
-threading.Thread(target=cluster_emulator, daemon=True).start()  # <— добавили
 threading.Thread(target=heartbeat_loop, daemon=True).start()
 
 @app.route("/")
@@ -230,6 +197,7 @@ def test_ping():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
