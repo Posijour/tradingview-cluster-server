@@ -407,10 +407,12 @@ def test_ping():
     send_telegram("🧪 Test ping from Render server — connection OK.")
     return "Test sent", 200
 
-# =========================
-# 🚀 Запуск (локально)
-# =========================
+# app.py (в самый низ)
 if __name__ == "__main__":
+    import os
     port = int(os.getenv("PORT", "8080"))
+    threading.Thread(target=cluster_worker, daemon=True).start()
+    threading.Thread(target=heartbeat_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=port)
+
 
