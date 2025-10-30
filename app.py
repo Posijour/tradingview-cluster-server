@@ -60,8 +60,8 @@ def send_telegram(text: str):
 # =========================
 # 📝 ЛОГИРОВАНИЕ
 # =========================
-def log_signal(ticker, direction, tf, sig_type):
-    """Сохраняем сигнал в CSV: time,ticker,direction,tf,type"""
+def log_signal(ticker, direction, tf, sig_type, entry=None, stop=None, target=None):
+    """Сохраняем сигнал в CSV: time,ticker,direction,tf,type,entry,stop,target"""
     try:
         with open(LOG_FILE, "a", newline="") as f:
             writer = csv.writer(f)
@@ -70,7 +70,10 @@ def log_signal(ticker, direction, tf, sig_type):
                 ticker,
                 direction,
                 tf,
-                sig_type
+                sig_type,
+                entry or "",
+                stop or "",
+                target or ""
             ])
         print(f"📝 Logged {sig_type} {ticker} {direction} {tf}")
     except Exception as e:
@@ -180,7 +183,16 @@ def webhook():
             now = time.time()
             with lock:
                 signals.append((now, ticker, direction, tf))
-            log_signal(ticker, direction, tf, "MTF")
+            log_signal(
+                ticker,
+                direction,
+                tf,
+                "MTF",
+                payload.get("entry"),
+                payload.get("stop"),
+                payload.get("target")
+            )
+
 
         # Попытка автоторговли (если включена)
         if TRADE_ENABLED and typ == "MTF":
@@ -219,7 +231,16 @@ def webhook():
             now = time.time()
             with lock:
                 signals.append((now, ticker, direction, tf))
-            log_signal(ticker, direction, tf, "MTF")
+            log_signal(
+                ticker,
+                direction,
+                tf,
+                "MTF",
+                payload.get("entry"),
+                payload.get("stop"),
+                payload.get("target")
+            )
+
             print(f"✅ {ticker} {direction} ({tf}) added for cluster window")
             return jsonify({"status": "ok"}), 200
 
@@ -324,7 +345,8 @@ def dashboard():
     return "\n".join(html)
 
 # =========================
-# 📊 ЛЁГКАЯ СТАТИСТИКА (без pandas)
+# =========================
+# 📊 ЛЁГКАЯ СТАТИСТИКА (c entry/stop/target)
 # =========================
 @app.route("/stats")
 def stats():
@@ -332,20 +354,22 @@ def stats():
         return "<h3>⚠️ Нет данных для анализа</h3>", 200
 
     try:
-        # читаем CSV
         rows = []
         with open(LOG_FILE, "r") as f:
             for r in csv.reader(f):
-                if len(r) == 5:
+                if len(r) >= 5:
                     rows.append(r)
 
-        # парсим и отбрасываем битые строки
         parsed = []
-        for t, ticker, direction, tf, typ in rows:
+        for r in rows:
             try:
-                ts = datetime.strptime(t, "%Y-%m-%d %H:%M:%S")
-                parsed.append((ts, ticker, direction, tf, typ))
-            except:
+                ts = datetime.strptime(r[0], "%Y-%m-%d %H:%M:%S")
+                ticker, direction, tf, typ = r[1], r[2], r[3], r[4]
+                entry  = float(r[5]) if len(r) > 5 and r[5] else None
+                stop   = float(r[6]) if len(r) > 6 and r[6] else None
+                target = float(r[7]) if len(r) > 7 and r[7] else None
+                parsed.append((ts, ticker, direction, tf, typ, entry, stop, target))
+            except Exception:
                 continue
 
         now = datetime.utcnow()
@@ -359,9 +383,23 @@ def stats():
         up_count = sum(1 for x in parsed if x[2] == "UP")
         down_count = sum(1 for x in parsed if x[2] == "DOWN")
 
+        # торговая статистика
+        with_prices = [x for x in parsed if x[5] and x[6] and x[7]]
+        avg_entry  = sum(x[5] for x in with_prices) / len(with_prices) if with_prices else 0
+        avg_stop   = sum(x[6] for x in with_prices) / len(with_prices) if with_prices else 0
+        avg_target = sum(x[7] for x in with_prices) / len(with_prices) if with_prices else 0
+
+        # последние 10 сигналов с ценами
+        last_signals = [x for x in with_prices][-10:]
+        last_rows_html = "".join(
+            f"<tr><td>{x[0].strftime('%Y-%m-%d %H:%M')}</td><td>{x[1]}</td><td>{x[2]}</td>"
+            f"<td>{x[5]}</td><td>{x[6]}</td><td>{x[7]}</td><td>{x[4]}</td></tr>"
+            for x in reversed(last_signals)
+        )
+
         # по дням/типам за 7 дней
         daily = defaultdict(lambda: {"MTF":0, "CLUSTER":0})
-        for ts, _, _, _, typ in parsed:
+        for ts, _, _, _, typ, *_ in parsed:
             if ts >= last_7d:
                 key = ts.date().isoformat()
                 if typ in ("MTF","CLUSTER"):
@@ -380,6 +418,20 @@ def stats():
           <li>MTF: <b>{mtf}</b> | Cluster: <b>{cluster}</b></li>
           <li>Направление — 🟢 UP: <b>{up_count}</b> | 🔴 DOWN: <b>{down_count}</b></li>
         </ul>
+
+        <h3>📈 Средние цены сигналов</h3>
+        <ul>
+          <li>Entry: <b>{avg_entry:.2f}</b></li>
+          <li>Stop: <b>{avg_stop:.2f}</b></li>
+          <li>Target: <b>{avg_target:.2f}</b></li>
+        </ul>
+
+        <h3>🕒 Последние 10 сигналов</h3>
+        <table border="1" cellpadding="4">
+          <tr><th>Время</th><th>Тикер</th><th>Направление</th><th>Entry</th><th>Stop</th><th>Target</th><th>Тип</th></tr>
+          {last_rows_html if last_rows_html else '<tr><td colspan="7">Нет сигналов</td></tr>'}
+        </table>
+
         <h4>📅 По дням (последние 7):</h4>
         <table border="1" cellpadding="4">
           <tr><th>Дата (UTC)</th><th>MTF</th><th>CLUSTER</th></tr>
@@ -414,5 +466,6 @@ if __name__ == "__main__":
     threading.Thread(target=cluster_worker, daemon=True).start()
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=port)
+
 
 
