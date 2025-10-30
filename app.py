@@ -319,29 +319,70 @@ def heartbeat_loop():
         time.sleep(60)
 
 # =========================
-# 🌐 ПРОСТОЙ DASHBOARD
+# =========================
+# 🌐 ПРОСТОЙ DASHBOARD (совместим с новым логом)
 # =========================
 @app.route("/dashboard")
 def dashboard():
-    html = ["<h2>📈 Active Signals Dashboard</h2><table border='1' cellpadding='4'>"]
-    html.append("<tr><th>Time (UTC)</th><th>Ticker</th><th>Direction</th><th>TF</th><th>Type</th></tr>")
+    html = [
+        "<h2>📈 Active Signals Dashboard</h2>",
+        "<table border='1' cellpadding='4'>",
+        "<tr><th>Time (UTC)</th><th>Ticker</th><th>Direction</th><th>TF</th><th>Type</th>"
+        "<th>Entry</th><th>Stop</th><th>Target</th></tr>"
+    ]
+
     try:
-        rows = []
-        if os.path.exists(LOG_FILE):
+        if not os.path.exists(LOG_FILE):
+            html.append("<tr><td colspan='8'>⚠️ No log file found</td></tr>")
+        else:
             with open(LOG_FILE, "r") as f:
-                lines = f.readlines()[-50:]
+                lines = f.readlines()[-50:]  # последние 50 строк, чтобы не тормозило
+
+            rows = []
             for line in lines:
                 parts = [p.strip() for p in line.strip().split(",")]
-                if len(parts) != 5:
+                # поддержка старых и новых логов
+                if len(parts) < 5:
                     continue
-                t, ticker, direction, tf, sig_type = parts
-                rows.append(f"<tr><td>{t}</td><td>{ticker}</td><td>{direction}</td><td>{tf}</td><td>{sig_type}</td></tr>")
-        else:
-            rows.append("<tr><td colspan='5'>⚠️ No logs yet</td></tr>")
-        html.extend(rows)
+
+                # заполняем недостающие поля, если их нет (для старых логов)
+                while len(parts) < 8:
+                    parts.append("")
+
+                t, ticker, direction, tf, sig_type, entry, stop, target = parts[:8]
+
+                # красивая подсветка направлений
+                color = "#d4ffd4" if direction == "UP" else "#ffd4d4" if direction == "DOWN" else "#f4f4f4"
+
+                row = (
+                    f"<tr style='background-color:{color}'>"
+                    f"<td>{t}</td>"
+                    f"<td>{ticker}</td>"
+                    f"<td>{direction}</td>"
+                    f"<td>{tf}</td>"
+                    f"<td>{sig_type}</td>"
+                    f"<td>{entry}</td>"
+                    f"<td>{stop}</td>"
+                    f"<td>{target}</td>"
+                    f"</tr>"
+                )
+                rows.append(row)
+
+            if rows:
+                html.extend(reversed(rows))
+            else:
+                html.append("<tr><td colspan='8'>⚠️ No valid log entries</td></tr>")
+
     except Exception as e:
-        html.append(f"<tr><td colspan='5'>⚠️ Error: {e}</td></tr>")
-    html.append("</table><p style='color:gray'>Updated {}</p>".format(datetime.utcnow().strftime("%H:%M:%S UTC")))
+        html.append(f"<tr><td colspan='8'>⚠️ Error reading log: {e}</td></tr>")
+
+    html.append("</table>")
+    html.append(
+        f"<p style='color:gray'>Updated {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}</p>"
+    )
+    html.append(
+        "<p style='font-size:small;color:gray'>Showing last 50 entries from log</p>"
+    )
     return "\n".join(html)
 
 # =========================
@@ -466,6 +507,3 @@ if __name__ == "__main__":
     threading.Thread(target=cluster_worker, daemon=True).start()
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=port)
-
-
-
