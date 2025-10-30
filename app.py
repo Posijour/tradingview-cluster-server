@@ -33,7 +33,6 @@ LOG_FILE = "signals_log.csv"  # единое имя используется в�
 
 # =========================
 # 🧠 ГЛОБАЛЬНЫЕ СТРУКТУРЫ
-# =========================
 signals = deque()  # элементы: (epoch_sec, ticker, direction, tf)
 lock = threading.Lock()
 last_cluster_sent = {"UP": 0.0, "DOWN": 0.0}
@@ -550,4 +549,5 @@ if __name__ == "__main__":
     threading.Thread(target=cluster_worker, daemon=True).start()
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=port)
+
 
