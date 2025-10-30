@@ -212,6 +212,79 @@ def dashboard():
     html.append("</table><p style='color:gray'>Updated {}</p>".format(datetime.utcnow().strftime("%H:%M:%S UTC")))
     return "\n".join(html)
 
+@app.route("/stats")
+def stats():
+    """📊 Продвинутая статистика сигналов (MTF + CLUSTER)"""
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    import io, base64
+
+    if not os.path.exists(LOG_FILE):
+        return "<h3>⚠️ Нет данных для анализа</h3>", 200
+
+    try:
+        # === 1️⃣ Чтение и подготовка данных ===
+        df = pd.read_csv(LOG_FILE, names=["time", "ticker", "direction", "tf", "type"])
+        df["time"] = pd.to_datetime(df["time"], errors="coerce")
+        df = df.dropna(subset=["time"])
+        now = datetime.utcnow()
+        last_7d = now - timedelta(days=7)
+        df_recent = df[df["time"] >= last_7d]
+
+        # === 2️⃣ Основная статистика ===
+        total = len(df)
+        last_24h = len(df[df["time"] > (now - timedelta(hours=24))])
+        mtf = len(df[df["type"] == "MTF"])
+        cluster = len(df[df["type"] == "CLUSTER"])
+
+        up_count = len(df[df["direction"] == "UP"])
+        down_count = len(df[df["direction"] == "DOWN"])
+        tf_counts = df["tf"].value_counts().to_dict()
+
+        # === 3️⃣ Группировка по дням ===
+        df_recent["date"] = df_recent["time"].dt.date
+        daily_counts = df_recent.groupby(["date", "type"]).size().unstack(fill_value=0)
+
+        # === 4️⃣ Построение графика ===
+        fig, ax = plt.subplots(figsize=(6, 3))
+        daily_counts.plot(kind="bar", ax=ax, stacked=False, color={"MTF": "orange", "CLUSTER": "deepskyblue"})
+        plt.title("Активность сигналов за последние 7 дней")
+        plt.ylabel("Количество сигналов")
+        plt.xticks(rotation=30, ha="right")
+        plt.tight_layout()
+
+        # === 5️⃣ Конвертация графика в base64 ===
+        buf = io.BytesIO()
+        plt.savefig(buf, format="png")
+        plt.close(fig)
+        buf.seek(0)
+        img_base64 = base64.b64encode(buf.read()).decode("utf-8")
+        img_tag = f"<img src='data:image/png;base64,{img_base64}' alt='Stats Graph'/>"
+
+        # === 6️⃣ HTML отчет ===
+        html = f"""
+        <h2>📊 TradingView Cluster Stats (7 days)</h2>
+        <ul>
+          <li>Всего сигналов: <b>{total}</b></li>
+          <li>За 24 часа: <b>{last_24h}</b></li>
+          <li>MTF сигналов: <b>{mtf}</b></li>
+          <li>Cluster сигналов: <b>{cluster}</b></li>
+          <li>Направление: 🟢 UP {up_count} | 🔴 DOWN {down_count}</li>
+        </ul>
+        <h4>📅 По таймфреймам:</h4>
+        <ul>
+        {''.join([f'<li>{k}: {v}</li>' for k, v in tf_counts.items()])}
+        </ul>
+        <h4>📈 Активность за неделю:</h4>
+        {img_tag}
+        <p style='color:gray'>Обновлено: {now.strftime("%H:%M:%S UTC")}</p>
+        """
+
+        return html
+
+    except Exception as e:
+        return f"<h3>❌ Ошибка анализа: {e}</h3>", 500
+
 # === ЗАПУСК ФОНОВЫХ ПОТОКОВ ===
 threading.Thread(target=cluster_worker, daemon=True).start()
 threading.Thread(target=heartbeat_loop, daemon=True).start()
@@ -232,6 +305,7 @@ def test_ping():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
