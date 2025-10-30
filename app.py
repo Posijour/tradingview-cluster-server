@@ -116,6 +116,49 @@ def calc_qty_from_risk(entry: float, stop: float, risk_usdt: float) -> float:
     qty = risk_usdt / risk_per_unit
     return float(f"{qty:.6f}")
 
+# === 📈 Реальный ATR из свечей Bybit (исправлено: сортировка по времени) ===
+def get_atr(symbol: str, period: int = 14, interval: str = "15", limit: int = 100) -> float:
+    """
+    Рассчитывает ATR по последним свечам Bybit (15m по умолчанию).
+    Bybit v5 /v5/market/kline возвращает свечи в обратном порядке (новые сначала),
+    поэтому сортируем по времени по возрастанию.
+    """
+    try:
+        url = f"{BYBIT_BASE_URL}/v5/market/kline"
+        params = {"category": "linear", "symbol": symbol, "interval": interval, "limit": limit}
+        r = requests.get(url, params=params, timeout=5).json()
+        if not isinstance(r, dict) or "result" not in r or not r["result"] or "list" not in r["result"]:
+            return 0.0
+
+        candles = r["result"]["list"]  # [ [start, open, high, low, close, volume, ...], ... ]
+        if not candles:
+            return 0.0
+
+        # Сортируем по времени (start) по возрастанию
+        candles.sort(key=lambda c: int(c[0]))
+
+        highs  = [float(c[2]) for c in candles]
+        lows   = [float(c[3]) for c in candles]
+        closes = [float(c[4]) for c in candles]
+
+        trs = []
+        for i in range(1, len(highs)):
+            tr = max(
+                highs[i] - lows[i],
+                abs(highs[i] - closes[i - 1]),
+                abs(lows[i] - closes[i - 1])
+            )
+            trs.append(tr)
+
+        if not trs:
+            return 0.0
+
+        lookback = min(period, len(trs))
+        return sum(trs[-lookback:]) / lookback
+    except Exception as e:
+        print("ATR fetch error:", e)
+        return 0.0
+
 def place_order_market_with_tp_sl(symbol: str, side: str, qty: float, tp: float, sl: float):
     payload = {
         "category": "linear",
@@ -245,55 +288,105 @@ def webhook():
 
     return jsonify({"status": "ignored"}), 200
 
-# =========================
 # 🧠 КЛАСТЕР-ВОРКЕР
-# =========================
 def cluster_worker():
     while True:
         try:
-            now = time.time()
-            cutoff = now - CLUSTER_WINDOW_MIN * 60
+            try:
+                now = time.time()
+                cutoff = now - CLUSTER_WINDOW_MIN * 60
 
-            with lock:
-                while signals and signals[0][0] < cutoff:
-                    signals.popleft()
+                with lock:
+                    while signals and signals[0][0] < cutoff:
+                        signals.popleft()
 
-                ups, downs, tickers_seen = set(), set(), set()
-                for (_, t, d, _) in signals:
-                    tickers_seen.add(t)
-                    if d == "UP":
-                        ups.add(t)
-                    elif d == "DOWN":
-                        downs.add(t)
+                    ups, downs, tickers_seen = set(), set(), set()
+                    for (_, t, d, _) in signals:
+                        tickers_seen.add(t)
+                        if d == "UP":
+                            ups.add(t)
+                        elif d == "DOWN":
+                            downs.add(t)
 
-            # UP кластер
-            if len(ups) >= CLUSTER_THRESHOLD:
-                if now - last_cluster_sent["UP"] >= CLUSTER_COOLDOWN_SEC:
-                    msg = (
-                        f"🟢 *CLUSTER UP* — {len(ups)} из {len(tickers_seen)} монет "
-                        f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
-                        f"📈 {', '.join(sorted(list(ups)))}"
-                    )
-                    send_telegram(msg)
-                    log_signal(",".join(sorted(list(ups))), "UP", VALID_TF, "CLUSTER")
-                    last_cluster_sent["UP"] = now
+                # UP кластер
+                if len(ups) >= CLUSTER_THRESHOLD:
+                    if now - last_cluster_sent["UP"] >= CLUSTER_COOLDOWN_SEC:
+                        msg = (
+                            f"🟢 *CLUSTER UP* — {len(ups)} из {len(tickers_seen)} монет "
+                            f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
+                            f"📈 {', '.join(sorted(list(ups)))}"
+                        )
+                        send_telegram(msg)
+                        log_signal(",".join(sorted(list(ups))), "UP", VALID_TF, "CLUSTER")
+                        last_cluster_sent["UP"] = now
 
-            # DOWN кластер
-            if len(downs) >= CLUSTER_THRESHOLD:
-                if now - last_cluster_sent["DOWN"] >= CLUSTER_COOLDOWN_SEC:
-                    msg = (
-                        f"🔴 *CLUSTER DOWN* — {len(downs)} из {len(tickers_seen)} монет "
-                        f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
-                        f"📉 {', '.join(sorted(list(downs)))}"
-                    )
-                    send_telegram(msg)
-                    log_signal(",".join(sorted(list(downs))), "DOWN", VALID_TF, "CLUSTER")
-                    last_cluster_sent["DOWN"] = now
+                # DOWN кластер
+                if len(downs) >= CLUSTER_THRESHOLD:
+                    if now - last_cluster_sent["DOWN"] >= CLUSTER_COOLDOWN_SEC:
+                        msg = (
+                            f"🔴 *CLUSTER DOWN* — {len(downs)} из {len(tickers_seen)} монет "
+                            f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
+                            f"📉 {', '.join(sorted(list(downs)))}"
+                        )
+                        send_telegram(msg)
+                        log_signal(",".join(sorted(list(downs))), "DOWN", VALID_TF, "CLUSTER")
+                        last_cluster_sent["DOWN"] = now
 
-        except Exception as e:
-            print("❌ cluster_worker error:", e)
+                # === 🚀 АВТОТОРГОВЛЯ ПО КЛАСТЕРАМ (с реальным ATR) ===
+                if TRADE_ENABLED:
+                    try:
+                        if len(ups) >= CLUSTER_THRESHOLD and ups:
+                            direction = "UP"
+                            ticker = list(ups)[0]
+                        elif len(downs) >= CLUSTER_THRESHOLD and downs:
+                            direction = "DOWN"
+                            ticker = list(downs)[0]
+                        else:
+                            ticker, direction = None, None
 
-        time.sleep(CHECK_INTERVAL_SEC)
+                        if ticker and direction:
+                            if SYMBOL_WHITELIST and ticker not in SYMBOL_WHITELIST:
+                                print(f"⛔ {ticker} не в белом списке — пропуск кластерной торговли")
+                            else:
+                                resp = requests.get(
+                                    f"{BYBIT_BASE_URL}/v5/market/tickers",
+                                    params={"category": "linear", "symbol": ticker},
+                                    timeout=5
+                                ).json()
+                                entry_price = float(resp["result"]["list"][0]["lastPrice"])
+
+                                atr_val = get_atr(ticker, period=14, interval="15")
+                                atr_base = get_atr(ticker, period=100, interval="15")
+                                vol_scale = max(0.7, min(atr_val / max(atr_base, 0.0001), 1.3))
+
+                                rr_stop = atr_val * 0.8 * vol_scale
+                                rr_target = atr_val * 2.4 * vol_scale
+
+                                stop_price = entry_price + rr_stop if direction == "UP" else entry_price - rr_stop
+                                target_price = entry_price - rr_target if direction == "UP" else entry_price + rr_target
+
+                                side = "Sell" if direction == "UP" else "Buy"
+
+                                set_leverage(ticker, LEVERAGE)
+                                qty = calc_qty_from_risk(entry_price, stop_price, MAX_RISK_USDT)
+                                if qty > 0:
+                                    resp = place_order_market_with_tp_sl(ticker, side, qty, target_price, stop_price)
+                                    print(f"💥 Cluster auto-trade {ticker} {side} -> TP:{target_price}, SL:{stop_price}")
+                                    send_telegram(
+                                        f"⚡ *CLUSTER AUTO-TRADE*\n{ticker} {side}\nQty: {qty}\n"
+                                        f"Entry~{entry_price}\nTP: {target_price}\nSL: {stop_price}"
+                                    )
+                    except Exception as e:
+                        print("❌ Cluster auto-trade error:", e)
+
+            except Exception as inner_e:
+                print("❌ cluster_worker internal error:", inner_e)
+
+            time.sleep(CHECK_INTERVAL_SEC)
+
+        except Exception as outer_e:
+            print("💀 cluster_worker crashed, restarting in 10s:", outer_e)
+            time.sleep(10)
 
 # =========================
 # ⏰ ЕЖЕДНЕВНЫЙ HEARTBEAT (03:00 UTC+2)
@@ -549,5 +642,3 @@ if __name__ == "__main__":
     threading.Thread(target=cluster_worker, daemon=True).start()
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=port)
-
-
