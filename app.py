@@ -4,6 +4,8 @@ from datetime import datetime, timedelta
 from collections import deque
 from flask import Flask, request, jsonify
 import requests
+import hmac, hashlib
+from urllib.parse import urlencode
 
 # === 🔧 НАСТРОЙКИ ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
@@ -43,6 +45,77 @@ def send_telegram(text: str):
         print("✅ Sent to Telegram")
     except Exception as e:
         print("❌ Telegram error:", e)
+
+BYBIT_API_KEY    = os.getenv("BYBIT_API_KEY", "")
+BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET", "")
+BYBIT_BASE_URL   = os.getenv("BYBIT_BASE_URL", "https://api-testnet.bybit.com")
+TRADE_ENABLED    = os.getenv("TRADE_ENABLED", "false").lower() == "true"
+MAX_RISK_USDT    = float(os.getenv("MAX_RISK_USDT", "50"))
+LEVERAGE         = float(os.getenv("LEVERAGE", "5"))
+SYMBOL_WHITELIST = set(s.strip().upper() for s in os.getenv("SYMBOL_WHITELIST","").split(",") if s.strip())
+
+def _bybit_sign(payload: dict) -> tuple[dict, str]:
+    """
+    Формирует заголовки + подпись для v5 API.
+    """
+    ts = str(int(time.time() * 1000))
+    recv_window = "5000"
+    # Bybit v5: sign = HMAC_SHA256(apiSecret, timestamp + apiKey + recvWindow + body)
+    body = json.dumps(payload) if payload else ""
+    pre_sign = ts + BYBIT_API_KEY + recv_window + body
+    sign = hmac.new(BYBIT_API_SECRET.encode(), pre_sign.encode(), hashlib.sha256).hexdigest()
+
+    headers = {
+        "X-BAPI-API-KEY": BYBIT_API_KEY,
+        "X-BAPI-SIGN": sign,
+        "X-BAPI-TIMESTAMP": ts,
+        "X-BAPI-RECV-WINDOW": recv_window,
+        "Content-Type": "application/json"
+    }
+    return headers, body
+
+def bybit_post(path: str, payload: dict) -> dict:
+    url = BYBIT_BASE_URL.rstrip("/") + path
+    headers, body = _bybit_sign(payload)
+    r = requests.post(url, headers=headers, data=body, timeout=10)
+    try:
+        return r.json()
+    except:
+        return {"http": r.status_code, "text": r.text}
+
+def set_leverage(symbol: str, leverage: float):
+    payload = {"category":"linear", "symbol":symbol, "buyLeverage":str(leverage), "sellLeverage":str(leverage)}
+    return bybit_post("/v5/position/set-leverage", payload)
+
+def calc_qty_from_risk(entry: float, stop: float, risk_usdt: float) -> float:
+    """
+    Для USDT-перпетуалов (contractValue=1): qty = risk / |entry-stop|
+    Округление до 6 знаков — большинство альтов поддерживают 3–6.
+    """
+    risk_per_unit = abs(entry - stop)
+    if risk_per_unit <= 0:
+        return 0.0
+    qty = risk_usdt / risk_per_unit
+    return float(f"{qty:.6f}")
+
+def place_order_market_with_tp_sl(symbol: str, side: str, qty: float, tp: float, sl: float):
+    """
+    MARKET вход + сразу TP/SL (tpSlMode=Full).
+    side: "Buy" или "Sell"
+    """
+    payload = {
+        "category": "linear",
+        "symbol": symbol,
+        "side": side,                # "Buy" | "Sell"
+        "orderType": "Market",
+        "qty": str(qty),
+        "timeInForce": "GoodTillCancel",
+        "tpSlMode": "Full",
+        "takeProfit": str(tp),
+        "stopLoss": str(sl),
+        "reduceOnly": False
+    }
+    return bybit_post("/v5/order/create", payload)
 
 # === 📝 ЛОГИРОВАНИЕ СИГНАЛОВ ===
 def log_signal(ticker, direction, tf, sig_type):
@@ -101,6 +174,48 @@ def webhook():
     if msg:
         send_telegram(msg)
         print(f"📨 Forwarded MTF alert: {payload.get('ticker')} {payload.get('direction')}")
+            # 👉 Попытка автосделки по MTF-сигналу из TradingView
+    # Ожидаем от Pine JSON с полями: entry, stop, target (как в твоём сообщении)
+    # Если их нет — торгуем по рынку и считаем из сообщения сервера (ниже можно адаптировать)
+    if TRADE_ENABLED and typ == "MTF":
+        symbol    = payload.get("ticker","").upper()
+        direction = payload.get("direction","").upper()
+        tf_p      = payload.get("tf","").lower()
+        entry     = float(payload.get("entry", 0) or 0)
+        stop      = float(payload.get("stop", 0) or 0)
+        target    = float(payload.get("target", 0) or 0)
+
+        # Контртренд: MTF UP -> SHORT; MTF DOWN -> LONG (как у тебя)
+        side = "Sell" if direction == "UP" else "Buy"
+
+        # Защита: символ в белом списке?
+        if SYMBOL_WHITELIST and symbol not in SYMBOL_WHITELIST:
+            print(f"⛔ {symbol} не в белом списке — торговать запрещено")
+            return jsonify({"status":"ignored", "why":"symbol not whitelisted"}), 200
+
+        if entry > 0 and stop > 0 and target > 0:
+            try:
+                # 1) установка плеча (однократно, не ошибка если уже стоит)
+                set_leverage(symbol, LEVERAGE)
+
+                # 2) размер позиции от риска
+                qty = calc_qty_from_risk(entry, stop, MAX_RISK_USDT)
+                if qty <= 0:
+                    return jsonify({"status":"ignored", "why":"qty=0"}), 200
+
+                # 3) рыночный вход + TP/SL
+                #   Для LONG: side="Buy", tp>entry, sl<entry
+                #   Для SHORT: side="Sell", tp<entry, sl>entry
+                resp = place_order_market_with_tp_sl(symbol, side, qty, target, stop)
+                print("Bybit order resp:", resp)
+                send_telegram(f"🚀 *AUTO-TRADE*\n{symbol} {side}\nQty: {qty}\nEntry~{entry}\nTP: {target}\nSL: {stop}")
+                return jsonify({"status":"traded", "resp": resp}), 200
+            except Exception as e:
+                print("Trade error:", e)
+                return jsonify({"status":"trade_error","err":str(e)}), 200
+        else:
+            print("⛔ В пейлоаде нет цен entry/stop/target — пропуск автоторговли")
+
         # при этом тоже добавляем в очередь для кластера
         ticker    = payload.get("ticker", "")
         direction = payload.get("direction", "")
@@ -283,3 +398,4 @@ def test_ping():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
