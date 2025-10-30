@@ -1,5 +1,5 @@
 # app.py
-import os, time, json, threading
+import os, time, json, threading, csv
 from datetime import datetime, timedelta
 from collections import deque
 from flask import Flask, request, jsonify
@@ -24,6 +24,9 @@ lock = threading.Lock()
 last_cluster_sent = {"UP": 0.0, "DOWN": 0.0}
 CLUSTER_COOLDOWN_SEC = int(os.getenv("CLUSTER_COOLDOWN_SEC", "300"))
 
+# === ПУТЬ К ЛОГУ ===
+LOG_FILE = "signals_log.csv"
+
 app = Flask(__name__)
 
 # === 📩 ФУНКЦИЯ ОТПРАВКИ В TELEGRAM ===
@@ -40,6 +43,23 @@ def send_telegram(text: str):
         print("✅ Sent to Telegram")
     except Exception as e:
         print("❌ Telegram error:", e)
+
+# === 📝 ЛОГИРОВАНИЕ СИГНАЛОВ ===
+def log_signal(ticker, direction, tf, sig_type):
+    """Сохраняем сигнал в CSV"""
+    try:
+        with open(LOG_FILE, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                ticker,
+                direction,
+                tf,
+                sig_type
+            ])
+        print(f"📝 Logged {sig_type} {ticker} {direction} {tf}")
+    except Exception as e:
+        print("❌ Log error:", e)
 
 # === 🔍 РАЗБОР ПОЛУЧЕННОГО PAYLOAD ===
 def parse_payload(req) -> dict:
@@ -88,6 +108,7 @@ def webhook():
             now = time.time()
             with lock:
                 signals.append((now, ticker, direction, tf))
+            log_signal(ticker, direction, tf, "MTF")
         return jsonify({"status": "forwarded"}), 200
 
     # 2️⃣ Старый формат (если message нет, но пришёл базовый сигнал)
@@ -98,6 +119,7 @@ def webhook():
             now = time.time()
             with lock:
                 signals.append((now, ticker, direction, tf))
+            log_signal(ticker, direction, tf, "MTF")
             print(f"✅ {ticker} {direction} ({tf}) added for cluster window")
             return jsonify({"status": "ok"}), 200
 
@@ -131,6 +153,7 @@ def cluster_worker():
                         f"📈 {', '.join(sorted(list(ups)))}"
                     )
                     send_telegram(msg)
+                    log_signal(",".join(sorted(list(ups))), "UP", VALID_TF, "CLUSTER")
                     last_cluster_sent["UP"] = now
 
             # DOWN кластер
@@ -142,6 +165,7 @@ def cluster_worker():
                         f"📉 {', '.join(sorted(list(downs)))}"
                     )
                     send_telegram(msg)
+                    log_signal(",".join(sorted(list(downs))), "DOWN", VALID_TF, "CLUSTER")
                     last_cluster_sent["DOWN"] = now
 
         except Exception as e:
@@ -156,12 +180,8 @@ def heartbeat_loop():
     sent_today = None
     while True:
         try:
-            # Текущее UTC время
             now_utc = datetime.datetime.utcnow()
-            # Перевод в UTC+2
             local_time = now_utc + datetime.timedelta(hours=2)
-
-            # Если 03:00 и еще не отправляли сегодня
             if local_time.hour == 3 and (sent_today != local_time.date()):
                 msg = (
                     f"🩵 *HEARTBEAT*\n"
@@ -171,13 +191,28 @@ def heartbeat_loop():
                 send_telegram(msg)
                 print("💬 Heartbeat sent to Telegram.")
                 sent_today = local_time.date()
-
         except Exception as e:
             print("❌ Heartbeat error:", e)
+        time.sleep(60)
 
-        time.sleep(60)  # проверяем каждую минуту
+# === 🌐 ПРОСТОЙ DASHBOARD ===
+@app.route("/dashboard")
+def dashboard():
+    html = ["<h2>📈 Active Signals Dashboard</h2><table border='1' cellpadding='4'>"]
+    html.append("<tr><th>Time (UTC)</th><th>Ticker</th><th>Direction</th><th>TF</th><th>Type</th></tr>")
+    try:
+        rows = []
+        with open(LOG_FILE, "r") as f:
+            for line in f.readlines()[-30:]:
+                t, ticker, direction, tf, sig_type = line.strip().split(",")
+                rows.append(f"<tr><td>{t}</td><td>{ticker}</td><td>{direction}</td><td>{tf}</td><td>{sig_type}</td></tr>")
+        html.extend(rows)
+    except Exception as e:
+        html.append(f"<tr><td colspan='5'>⚠️ No logs yet ({e})</td></tr>")
+    html.append("</table><p style='color:gray'>Updated {}</p>".format(datetime.utcnow().strftime("%H:%M:%S UTC")))
+    return "\n".join(html)
 
-# Запуск фонового анализа
+# === ЗАПУСК ФОНОВЫХ ПОТОКОВ ===
 threading.Thread(target=cluster_worker, daemon=True).start()
 threading.Thread(target=heartbeat_loop, daemon=True).start()
 
@@ -197,6 +232,8 @@ def test_ping():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
+
 
 
 
