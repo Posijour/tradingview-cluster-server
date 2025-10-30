@@ -392,12 +392,6 @@ def stats():
         return f"<h3>❌ Ошибка анализа: {e}</h3>", 500
 
 # =========================
-# 🧵 ФОНОВЫЕ ПОТОКИ
-# =========================
-threading.Thread(target=cluster_worker, daemon=True).start()
-threading.Thread(target=heartbeat_loop, daemon=True).start()
-
-# =========================
 # 🔎 HEALTH / TEST
 # =========================
 @app.route("/")
@@ -419,3 +413,4 @@ def test_ping():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
