@@ -907,4 +907,5 @@ threading.Thread(target=backup_log_worker, daemon=True).start()
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     # веб-сервер — только если скрипт запущен напрямую
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, use_reloader=False)
+
