@@ -70,47 +70,76 @@ def verify_signature(secret, body, signature):
     return hmac.compare_digest(mac, signature)
 
 # =============== 📩 Telegram отправка с антифлудом ===============
+# =============== 📩 Telegram ===============
 def send_telegram(text: str):
     """
     Отправляет сообщение в Telegram в ФОНОВОМ потоке.
-    Весь антифлуд (не чаще 1/сек, не более 20/мин) теперь внутри потока,
-    чтобы основной HTTP-обработчик не зависал на sleep().
+    Весь антифлуд (не чаще 1/сек, не более 20/мин) внутри потока,
+    чтобы HTTP-обработчик не ждал sleep().
     """
     if not TELEGRAM_TOKEN or not CHAT_ID:
         print("⚠️ Telegram credentials missing.")
         return
 
     safe_text = md_escape(text)
-    
-    def send_telegram_document(filepath: str, caption: str = ""):
-        if not TELEGRAM_TOKEN or not CHAT_ID:
-            print("⚠️ Telegram credentials missing.")
-            return False
+
+    def _send_with_rate_limit():
         try:
-            if not os.path.exists(filepath):
-                print(f"⚠️ Document not found: {filepath}")
-                return False
-    
-            # Telegram ограничение ~50 МБ на файл. Проверим на всякий.
-            size_mb = os.path.getsize(filepath) / (1024 * 1024)
-            if size_mb > 49.5:
-                print(f"⚠️ File too large for Telegram: {size_mb:.1f} MB")
-                return False
-    
-            files = {"document": (os.path.basename(filepath), open(filepath, "rb"))}
-            data = {"chat_id": CHAT_ID, "caption": caption[:1024]}  # safety: caption <= 1024
-            r = requests.post(
-                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument",
-                data=data,
-                files=files,
-                timeout=20
+            now = monotonic()
+            tg_times.append(now)
+
+            # не чаще 1 сообщения/сек
+            if len(tg_times) >= 2 and now - tg_times[-2] < 1.0:
+                time.sleep(1.0 - (now - tg_times[-2]))
+
+            # и не более 20 за минуту
+            if len(tg_times) == tg_times.maxlen and now - tg_times[0] < 60:
+                time.sleep(60 - (now - tg_times[0]))
+
+            requests.get(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                params={"chat_id": CHAT_ID, "text": safe_text, "parse_mode": "MarkdownV2"},
+                timeout=8,
             )
-            ok = (r.status_code == 200)
-            print("✅ Sent CSV to Telegram" if ok else f"❌ Telegram sendDocument error: {r.text}")
-            return ok
+            print("✅ Sent to Telegram")
         except Exception as e:
-            print("❌ Telegram sendDocument exception:", e)
+            print("❌ Telegram error:", e)
+
+    threading.Thread(target=_send_with_rate_limit, daemon=True).start()
+
+def send_telegram_document(filepath: str, caption: str = ""):
+    """
+    Отправка файла (CSV) в Telegram. Используется воркером бэкапа.
+    """
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        print("⚠️ Telegram credentials missing.")
+        return False
+    try:
+        if not os.path.exists(filepath):
+            print(f"⚠️ Document not found: {filepath}")
             return False
+
+        # Telegram лимит ~50 МБ
+        size_mb = os.path.getsize(filepath) / (1024 * 1024)
+        if size_mb > 49.5:
+            print(f"⚠️ File too large for Telegram: {size_mb:.1f} MB")
+            return False
+
+        files = {"document": (os.path.basename(filepath), open(filepath, "rb"))}
+        data = {"chat_id": CHAT_ID, "caption": caption[:1024]}  # caption <= 1024
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument",
+            data=data,
+            files=files,
+            timeout=20
+        )
+        ok = (r.status_code == 200)
+        print("✅ Sent CSV to Telegram" if ok else f"❌ Telegram sendDocument error: {r.text}")
+        return ok
+    except Exception as e:
+        print("❌ Telegram sendDocument exception:", e)
+        return False
+
 
     def _send_with_rate_limit():
         try:
@@ -233,8 +262,6 @@ def normalize_qty(symbol: str, qty: float) -> float:
     except Exception as e:
         print("❌ normalize_qty error:", e)
         return float(f"{qty:.6f}")
-
-import math
 
 def calc_qty_from_risk(entry: float, stop: float, risk_usdt: float, symbol: str) -> float:
     """
@@ -869,6 +896,7 @@ if __name__ == "__main__":
 
     # веб-сервер
     app.run(host="0.0.0.0", port=port)
+
 
 
 
