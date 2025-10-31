@@ -4,6 +4,15 @@ from datetime import datetime, timedelta
 from collections import deque, defaultdict
 from flask import Flask, request, jsonify
 import requests
+from collections import deque
+from time import monotonic
+tg_times = deque(maxlen=20)
+import html as _html
+def esc(x): return _html.escape(str(x), quote=True)
+import re
+MD_ESCAPE = re.compile(r'([_*\[\]()~`>#+\-=|{}.!])')
+def md_escape(text: str) -> str:
+    return MD_ESCAPE.sub(r'\\\1', text)
 
 # =========================
 # 🔧 НАСТРОЙКИ
@@ -33,11 +42,13 @@ LOG_FILE = "signals_log.csv"  # единое имя используется в�
 
 # =========================
 # 🧠 ГЛОБАЛЬНЫЕ СТРУКТУРЫ
-signals = deque()  # элементы: (epoch_sec, ticker, direction, tf)
+signals = deque(maxlen=5000)  # было без maxlen  # элементы: (epoch_sec, ticker, direction, tf)
 lock = threading.Lock()
+state_lock = threading.Lock()
 last_cluster_sent = {"UP": 0.0, "DOWN": 0.0}
-
+log_lock = threading.Lock()
 app = Flask(__name__)
+stop_event = threading.Event()
 
 # =========================
 # 📩 Telegram
@@ -47,9 +58,18 @@ def send_telegram(text: str):
         print("⚠️ Telegram credentials missing.")
         return
     try:
+        safe = md_escape(text)
+        now = monotonic()
+        tg_times.append(now)
+        # Не чаще 1 сообщения в секунду
+        if len(tg_times) >= 2 and now - tg_times[-2] < 1.0:
+            time.sleep(1.0 - (now - tg_times[-2]))
+        # И не более 20 за минуту
+        if len(tg_times) == tg_times.maxlen and now - tg_times[0] < 60:
+            time.sleep(60 - (now - tg_times[0]))
         requests.get(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            params={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"},
+            params={"chat_id": CHAT_ID, "text": safe, "parse_mode": "MarkdownV2"},
             timeout=8,
         )
         print("✅ Sent to Telegram")
@@ -60,20 +80,20 @@ def send_telegram(text: str):
 # 📝 ЛОГИРОВАНИЕ
 # =========================
 def log_signal(ticker, direction, tf, sig_type, entry=None, stop=None, target=None):
-    """Сохраняем сигнал в CSV: time,ticker,direction,tf,type,entry,stop,target"""
+    row = [
+        datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        ticker, direction, tf, sig_type,
+        entry or "", stop or "", target or ""
+    ]
     try:
-        with open(LOG_FILE, "a", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-                ticker,
-                direction,
-                tf,
-                sig_type,
-                entry or "",
-                stop or "",
-                target or ""
-            ])
+        with log_lock:
+            create_header = not os.path.exists(LOG_FILE)
+            with open(LOG_FILE, "a", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                if create_header:
+                    w.writerow(["time_utc","ticker","direction","tf","type","entry","stop","target"])
+                w.writerow(row)
+                f.flush()
         print(f"📝 Logged {sig_type} {ticker} {direction} {tf}")
     except Exception as e:
         print("❌ Log error:", e)
@@ -101,19 +121,50 @@ def bybit_post(path: str, payload: dict) -> dict:
     headers, body = _bybit_sign(payload)
     r = requests.post(url, headers=headers, data=body, timeout=10)
     try:
-        return r.json()
-    except:
+        j = r.json()
+    except Exception:
         return {"http": r.status_code, "text": r.text}
+    if j.get("retCode", 0) != 0:
+        print("❌ Bybit error:", j)
+    return j
+
+def safe_last_price(symbol: str) -> float:
+    try:
+        r = requests.get(
+            f"{BYBIT_BASE_URL}/v5/market/tickers",
+            params={"category": "linear", "symbol": symbol},
+            timeout=5
+        ).json()
+        lst = (((r or {}).get("result") or {}).get("list") or [])
+        if not lst:
+            return 0.0
+        return float(lst[0]["lastPrice"])
+    except Exception:
+        return 0.0
 
 def set_leverage(symbol: str, leverage: float):
     payload = {"category":"linear", "symbol":symbol, "buyLeverage":str(leverage), "sellLeverage":str(leverage)}
     return bybit_post("/v5/position/set-leverage", payload)
 
+def normalize_qty(symbol: str, qty: float) -> float:
+    try:
+        r = requests.get(
+            f"{BYBIT_BASE_URL}/v5/market/instruments-info",
+            params={"category": "linear", "symbol": symbol}, timeout=5
+        ).json()
+        info = (((r or {}).get("result") or {}).get("list") or [])[0]
+        step = float(info.get("lotSizeFilter", {}).get("qtyStep", "0.001"))
+        precision = max(0, str(step)[::-1].find('.'))
+        normalized = max(step, (qty // step) * step)
+        return float(f"{normalized:.{precision}f}")
+    except Exception:
+        return float(f"{qty:.6f}")
+
 def calc_qty_from_risk(entry: float, stop: float, risk_usdt: float) -> float:
     risk_per_unit = abs(entry - stop)
     if risk_per_unit <= 0:
         return 0.0
-    qty = risk_usdt / risk_per_unit
+    qty = normalize_qty(symbol_or_ticker, qty)
     return float(f"{qty:.6f}")
 
 # === 📈 Реальный ATR из свечей Bybit (исправлено: сортировка по времени) ===
@@ -235,7 +286,6 @@ def webhook():
                 payload.get("target")
             )
 
-
         # Попытка автоторговли (если включена)
         if TRADE_ENABLED and typ == "MTF":
             try:
@@ -307,30 +357,33 @@ def cluster_worker():
                             ups.add(t)
                         elif d == "DOWN":
                             downs.add(t)
+                    # UP кластер
+                    with state_lock:
+                        if len(ups) >= CLUSTER_THRESHOLD:
+                            if now - last_cluster_sent["UP"] >= CLUSTER_COOLDOWN_SEC:
+                                msg = (
+                                    f"🟢 *CLUSTER UP* — {len(ups)} из {len(tickers_seen)} монет "
+                                    f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
+                                    f"📈 {', '.join(sorted(list(ups)))}"
+                                )
+                                send_telegram(msg)
+                                log_signal(",".join(sorted(list(ups))), "UP", VALID_TF, "CLUSTER")
+                                last_cluster_sent["UP"] = now
 
-                # UP кластер
-                if len(ups) >= CLUSTER_THRESHOLD:
-                    if now - last_cluster_sent["UP"] >= CLUSTER_COOLDOWN_SEC:
-                        msg = (
-                            f"🟢 *CLUSTER UP* — {len(ups)} из {len(tickers_seen)} монет "
-                            f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
-                            f"📈 {', '.join(sorted(list(ups)))}"
-                        )
-                        send_telegram(msg)
-                        log_signal(",".join(sorted(list(ups))), "UP", VALID_TF, "CLUSTER")
-                        last_cluster_sent["UP"] = now
-
-                # DOWN кластер
-                if len(downs) >= CLUSTER_THRESHOLD:
-                    if now - last_cluster_sent["DOWN"] >= CLUSTER_COOLDOWN_SEC:
-                        msg = (
-                            f"🔴 *CLUSTER DOWN* — {len(downs)} из {len(tickers_seen)} монет "
-                            f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
-                            f"📉 {', '.join(sorted(list(downs)))}"
-                        )
-                        send_telegram(msg)
-                        log_signal(",".join(sorted(list(downs))), "DOWN", VALID_TF, "CLUSTER")
-                        last_cluster_sent["DOWN"] = now
+                        # DOWN кластер
+                        with state_lock:
+                            if len(downs) >= CLUSTER_THRESHOLD:
+                                if now - last_cluster_sent["DOWN"] >= CLUSTER_COOLDOWN_SEC:
+                                    msg = (
+                                        f"🔴 *CLUSTER DOWN* — {len(downs)} из {len(tickers_seen)} монет "
+                                        f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
+                                        f"📉 {', '.join(sorted(list(downs)))}"
+                                    )
+                                    send_telegram(msg)
+                                    log_signal(",".join(sorted(list(downs))), "DOWN", VALID_TF, "CLUSTER")
+                                    last_cluster_sent["DOWN"] = now
+                        if entry_price <= 0 or atr_val <= 0 or atr_base <= 0:
+                            raise ValueError("Bad market/ATR data, skip auto-trade")
 
                 # === 🚀 АВТОТОРГОВЛЯ ПО КЛАСТЕРАМ (с реальным ATR) ===
                 if TRADE_ENABLED:
@@ -366,9 +419,12 @@ def cluster_worker():
                                 target_price = entry_price - rr_target if direction == "UP" else entry_price + rr_target
 
                                 side = "Sell" if direction == "UP" else "Buy"
-
+                                qty = normalize_qty(symbol, qty)
                                 set_leverage(ticker, LEVERAGE)
                                 qty = calc_qty_from_risk(entry_price, stop_price, MAX_RISK_USDT)
+
+                                if qty <= 0:
+                                    raise ValueError("Qty <= 0 after normalization")
                                 if qty > 0:
                                     resp = place_order_market_with_tp_sl(ticker, side, qty, target_price, stop_price)
                                     print(f"💥 Cluster auto-trade {ticker} {side} -> TP:{target_price}, SL:{stop_price}")
@@ -412,8 +468,6 @@ def heartbeat_loop():
 
 # =========================
 # =========================
-# 🌐 ПРОСТОЙ DASHBOARD (совместим с новым логом)
-# =========================
 @app.route("/dashboard")
 def dashboard():
     html = [
@@ -427,8 +481,9 @@ def dashboard():
         if not os.path.exists(LOG_FILE):
             html.append("<tr><td colspan='8'>⚠️ No log file found</td></tr>")
         else:
-            with open(LOG_FILE, "r") as f:
-                lines = f.readlines()[-50:]  # последние 50 строк, чтобы не тормозило
+            with log_lock:  # ← вот тут магия синхронизации
+                with open(LOG_FILE, "r") as f:
+                    lines = f.readlines()[-50:]  # последние 50 строк, чтобы не тормозило
 
             rows = []
             for line in lines:
@@ -448,16 +503,17 @@ def dashboard():
 
                 row = (
                     f"<tr style='background-color:{color}'>"
-                    f"<td>{t}</td>"
-                    f"<td>{ticker}</td>"
-                    f"<td>{direction}</td>"
-                    f"<td>{tf}</td>"
-                    f"<td>{sig_type}</td>"
-                    f"<td>{entry}</td>"
-                    f"<td>{stop}</td>"
-                    f"<td>{target}</td>"
+                    f"<td>{esc(t)}</td>"
+                    f"<td>{esc(ticker)}</td>"
+                    f"<td>{esc(direction)}</td>"
+                    f"<td>{esc(tf)}</td>"
+                    f"<td>{esc(sig_type)}</td>"
+                    f"<td>{esc(entry)}</td>"
+                    f"<td>{esc(stop)}</td>"
+                    f"<td>{esc(target)}</td>"
                     f"</tr>"
                 )
+
                 rows.append(row)
 
             if rows:
@@ -479,8 +535,8 @@ def dashboard():
 
 # =========================
 # =========================
-# 📊 ЛЁГКАЯ СТАТИСТИКА (c entry/stop/target)
-# =========================
+from markupsafe import escape as esc
+
 @app.route("/stats")
 def stats():
     if not os.path.exists(LOG_FILE):
@@ -488,10 +544,12 @@ def stats():
 
     try:
         rows = []
-        with open(LOG_FILE, "r") as f:
-            for r in csv.reader(f):
-                if len(r) >= 5:
-                    rows.append(r)
+        # аккуратно читаем лог с блокировкой
+        with log_lock:
+            with open(LOG_FILE, "r") as f:
+                for r in csv.reader(f):
+                    if len(r) >= 5:
+                        rows.append(r)
 
         parsed = []
         for r in rows:
@@ -525,8 +583,9 @@ def stats():
         # последние 10 сигналов с ценами
         last_signals = [x for x in with_prices][-10:]
         last_rows_html = "".join(
-            f"<tr><td>{x[0].strftime('%Y-%m-%d %H:%M')}</td><td>{x[1]}</td><td>{x[2]}</td>"
-            f"<td>{x[5]}</td><td>{x[6]}</td><td>{x[7]}</td><td>{x[4]}</td></tr>"
+            f"<tr><td>{esc(x[0].strftime('%Y-%m-%d %H:%M'))}</td>"
+            f"<td>{esc(x[1])}</td><td>{esc(x[2])}</td>"
+            f"<td>{x[5]}</td><td>{x[6]}</td><td>{x[7]}</td><td>{esc(x[4])}</td></tr>"
             for x in reversed(last_signals)
         )
 
@@ -539,7 +598,7 @@ def stats():
                     daily[key][typ] += 1
 
         daily_html = "".join(
-            f"<tr><td>{d}</td><td>{v['MTF']}</td><td>{v['CLUSTER']}</td></tr>"
+            f"<tr><td>{esc(d)}</td><td>{v['MTF']}</td><td>{v['CLUSTER']}</td></tr>"
             for d, v in sorted(daily.items())
         )
 
@@ -570,30 +629,29 @@ def stats():
           <tr><th>Дата (UTC)</th><th>MTF</th><th>CLUSTER</th></tr>
           {daily_html if daily_html else '<tr><td colspan="3">Нет данных</td></tr>'}
         </table>
-        <p style='color:gray'>Обновлено: {now.strftime("%H:%M:%S UTC")}</p>
+        <p style='color:gray'>Обновлено: {esc(now.strftime("%H:%M:%S UTC"))}</p>
         """
         return html
     except Exception as e:
-        return f"<h3>❌ Ошибка анализа: {e}</h3>", 500
+        return f"<h3>❌ Ошибка анализа: {esc(e)}</h3>", 500
 
 # =========================
-# 🧪 ЭМУЛЯТОР ТОРГОВОГО СИГНАЛА
-# =========================
-@app.route("/simulate", methods=["GET", "POST"])
+@app.route("/simulate", methods=["POST"])
 def simulate():
-    """
-    Эмулирует сигнал от TradingView.
-    Можно дернуть вручную в браузере или через curl/Postman.
-    Пример:
-      GET  /simulate?ticker=BTCUSDT&direction=UP&entry=68000&stop=67500&target=69000
-    """
+    # простая защита: тот же секрет в заголовке
+    if WEBHOOK_SECRET:
+        sig = request.headers.get("X-Webhook-Signature", "")
+        raw = request.get_data()
+        if not verify_signature(WEBHOOK_SECRET, raw, sig):
+            return "forbidden", 403
     try:
-        ticker = request.args.get("ticker", "BTCUSDT").upper()
-        direction = request.args.get("direction", "UP").upper()
-        entry = float(request.args.get("entry", 68000))
-        stop = float(request.args.get("stop", 67500))
-        target = float(request.args.get("target", 69000))
-        tf = request.args.get("tf", VALID_TF)
+        data = request.get_json(force=True, silent=True) or {}
+        ticker = str(data.get("ticker", "BTCUSDT")).upper()
+        direction = str(data.get("direction", "UP")).upper()
+        entry = float(data.get("entry", 68000))
+        stop = float(data.get("stop", 67500))
+        target = float(data.get("target", 69000))
+        tf = str(data.get("tf", VALID_TF))
 
         msg = (
             f"📊 *SIMULATED SIGNAL*\n"
@@ -602,19 +660,13 @@ def simulate():
             f"⏰ {datetime.utcnow().strftime('%H:%M:%S UTC')}"
         )
 
-        # лог и телеграм
         log_signal(ticker, direction, tf, "SIMULATED", entry, stop, target)
         send_telegram(msg)
 
         print(f"🧪 Simulated signal sent for {ticker} {direction}")
         return jsonify({
-            "status": "ok",
-            "ticker": ticker,
-            "direction": direction,
-            "entry": entry,
-            "stop": stop,
-            "target": target,
-            "tf": tf
+            "status": "ok", "ticker": ticker, "direction": direction,
+            "entry": entry, "stop": stop, "target": target, "tf": tf
         }), 200
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)}), 500
@@ -642,4 +694,5 @@ if __name__ == "__main__":
     threading.Thread(target=cluster_worker, daemon=True).start()
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=port)
+
 
