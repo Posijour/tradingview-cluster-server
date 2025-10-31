@@ -12,6 +12,12 @@ import requests
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 CHAT_ID        = os.getenv("CHAT_ID", "766363011")
 
+# Бэкап лога в Telegram (вариант 3)
+BACKUP_ENABLED       = os.getenv("BACKUP_ENABLED", "true").lower() == "true"
+BACKUP_INTERVAL_MIN  = int(os.getenv("BACKUP_INTERVAL_MIN", "360"))  # раз в 6 часов
+BACKUP_ONLY_IF_GROWS = os.getenv("BACKUP_ONLY_IF_GROWS", "true").lower() == "true"
+
+
 # Кластеры
 CLUSTER_WINDOW_MIN     = int(os.getenv("CLUSTER_WINDOW_MIN", "60"))     # окно кластеров в минутах
 CLUSTER_THRESHOLD      = int(os.getenv("CLUSTER_THRESHOLD", "6"))       # сколько разных монет в одну сторону, чтобы это считалось кластером
@@ -65,39 +71,71 @@ def verify_signature(secret, body, signature):
 
 # =============== 📩 Telegram отправка с антифлудом ===============
 def send_telegram(text: str):
+    """
+    Отправляет сообщение в Telegram в ФОНОВОМ потоке.
+    Весь антифлуд (не чаще 1/сек, не более 20/мин) теперь внутри потока,
+    чтобы основной HTTP-обработчик не зависал на sleep().
+    """
     if not TELEGRAM_TOKEN or not CHAT_ID:
         print("⚠️ Telegram credentials missing.")
         return
+
+    safe_text = md_escape(text)
+    
+    def send_telegram_document(filepath: str, caption: str = ""):
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        print("⚠️ Telegram credentials missing.")
+        return False
     try:
-        safe = md_escape(text)
+        if not os.path.exists(filepath):
+            print(f"⚠️ Document not found: {filepath}")
+            return False
 
-        now = monotonic()
-        tg_times.append(now)
+        # Telegram ограничение ~50 МБ на файл. Проверим на всякий.
+        size_mb = os.path.getsize(filepath) / (1024 * 1024)
+        if size_mb > 49.5:
+            print(f"⚠️ File too large for Telegram: {size_mb:.1f} MB")
+            return False
 
-        # не чаще 1 сообщения/сек
-        if len(tg_times) >= 2 and now - tg_times[-2] < 1.0:
-            time.sleep(1.0 - (now - tg_times[-2]))
-
-        # не больше 20 сообщений в минуту
-        if len(tg_times) == tg_times.maxlen and now - tg_times[0] < 60:
-            time.sleep(60 - (now - tg_times[0]))
-
-        # отправляем в отдельном потоке, чтобы не блокировать запросы
-        def _send():
-            try:
-                requests.get(
-                    f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                    params={"chat_id": CHAT_ID, "text": safe, "parse_mode": "MarkdownV2"},
-                    timeout=8,
-                )
-                print("✅ Sent to Telegram")
-            except Exception as e:
-                print("❌ Telegram error (inner thread):", e)
-
-        threading.Thread(target=_send, daemon=True).start()
-
+        files = {"document": (os.path.basename(filepath), open(filepath, "rb"))}
+        data = {"chat_id": CHAT_ID, "caption": caption[:1024]}  # safety: caption <= 1024
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument",
+            data=data,
+            files=files,
+            timeout=20
+        )
+        ok = (r.status_code == 200)
+        print("✅ Sent CSV to Telegram" if ok else f"❌ Telegram sendDocument error: {r.text}")
+        return ok
     except Exception as e:
-        print("❌ Telegram error (outer):", e)
+        print("❌ Telegram sendDocument exception:", e)
+        return False
+
+    def _send_with_rate_limit():
+        try:
+            # антифлуд вынесен сюда
+            now = monotonic()
+            tg_times.append(now)
+
+            # не чаще 1 сообщения в секунду
+            if len(tg_times) >= 2 and now - tg_times[-2] < 1.0:
+                time.sleep(1.0 - (now - tg_times[-2]))
+
+            # и не более 20 за минуту
+            if len(tg_times) == tg_times.maxlen and now - tg_times[0] < 60:
+                time.sleep(60 - (now - tg_times[0]))
+
+            requests.get(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                params={"chat_id": CHAT_ID, "text": safe_text, "parse_mode": "MarkdownV2"},
+                timeout=8,
+            )
+            print("✅ Sent to Telegram")
+        except Exception as e:
+            print("❌ Telegram error:", e)
+
+    threading.Thread(target=_send_with_rate_limit, daemon=True).start()
 
 # =============== 📝 ЛОГИРОВАНИЕ сигналов В CSV ===============
 def log_signal(ticker, direction, tf, sig_type, entry=None, stop=None, target=None):
@@ -152,29 +190,81 @@ def bybit_post(path: str, payload: dict) -> dict:
         print("❌ Bybit error:", j)
     return j
 
+import math
+
+def _decimals_from_step(step_str: str) -> int:
+    """
+    Определяет, сколько знаков после запятой нужно оставить,
+    исходя из шага qtyStep. Корректно работает даже с 1e-3.
+    """
+    s = str(step_str)
+    if "e" in s or "E" in s:
+        try:
+            return max(0, -int(s.split("e")[-1]))
+        except Exception:
+            return 0
+    if "." in s:
+        return len(s.split(".")[1].rstrip("0"))
+    return 0
+
 def normalize_qty(symbol: str, qty: float) -> float:
+    """
+    Нормализует количество до минимального шага Bybit (qtyStep).
+    Учитывает minOrderQty и корректно округляет вниз.
+    """
     try:
         r = requests.get(
             f"{BYBIT_BASE_URL}/v5/market/instruments-info",
             params={"category": "linear", "symbol": symbol}, timeout=5
         ).json()
         info = (((r or {}).get("result") or {}).get("list") or [])[0]
+        lot_info = info.get("lotSizeFilter", {}) or {}
 
-        step = float(info.get("lotSizeFilter", {}).get("qtyStep", "0.001"))  # минимальный шаг размера позиции
-        precision = max(0, str(step)[::-1].find('.'))  # количество знаков после запятой
-        normalized = max(step, (qty // step) * step)
-        return float(f"{normalized:.{precision}f}")
-    except Exception:
+        step_str = lot_info.get("qtyStep", "0.001")
+        min_qty_str = lot_info.get("minOrderQty", step_str)
+
+        step = float(step_str)
+        min_qty = float(min_qty_str)
+        decimals = _decimals_from_step(step_str)
+
+        stepped = math.floor(qty / step) * step
+        normalized = max(min_qty, stepped)
+        return float(f"{normalized:.{decimals}f}")
+    except Exception as e:
+        print("❌ normalize_qty error:", e)
         return float(f"{qty:.6f}")
 
+import math
+
 def calc_qty_from_risk(entry: float, stop: float, risk_usdt: float, symbol: str) -> float:
-    # Считаем "сколько контракта можно купить так, чтобы риск до стопа был не больше risk_usdt"
-    risk_per_unit = abs(entry - stop)
-    if risk_per_unit <= 0:
+    """
+    Возвращает количество контрактов под риск в USDT.
+    Жёстко фильтрует нули/NaN/inf, не даёт отрицательных значений,
+    перед нормализацией приводит всё к float.
+    """
+    try:
+        entry = float(entry)
+        stop = float(stop)
+        risk_usdt = float(risk_usdt)
+    except Exception:
         return 0.0
+
+    if entry <= 0 or stop <= 0 or risk_usdt <= 0:
+        return 0.0
+
+    risk_per_unit = abs(entry - stop)
+    if not math.isfinite(risk_per_unit) or risk_per_unit < 1e-12:
+        return 0.0
+
     raw_qty = risk_usdt / risk_per_unit
+    if not math.isfinite(raw_qty) or raw_qty <= 0:
+        return 0.0
+
     qty = normalize_qty(symbol, raw_qty)
-    return float(f"{qty:.6f}")
+    if not math.isfinite(qty) or qty <= 0:
+        return 0.0
+
+    return qty
 
 def set_leverage(symbol: str, leverage: float):
     payload = {"category":"linear", "symbol":symbol, "buyLeverage":str(leverage), "sellLeverage":str(leverage)}
@@ -488,6 +578,40 @@ def cluster_worker():
             print("💀 cluster_worker crashed, restarting in 10s:", e)
             time.sleep(10)
 
+# =============== ВОРКЕР БЕКАПА ===============
+def backup_log_worker():
+    """
+    Раз в BACKUP_INTERVAL_MIN минут шлёт файл signals_log.csv в Телеграм.
+    Если BACKUP_ONLY_IF_GROWS=true — шлёт только если размер файла увеличился
+    с последнего раза (защита от спама одинаковыми копиями).
+    """
+    if not BACKUP_ENABLED:
+        print("ℹ️ Backup disabled by BACKUP_ENABLED=false")
+        return
+
+    last_size = -1
+    while True:
+        try:
+            if os.path.exists(LOG_FILE):
+                size_now = os.path.getsize(LOG_FILE)
+                should_send = True
+                if BACKUP_ONLY_IF_GROWS:
+                    should_send = (last_size < 0) or (size_now > last_size)
+
+                if should_send and size_now > 0:
+                    ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+                    caption = f"📦 signals_log.csv backup ({ts}) | size: {size_now//1024} KB"
+                    ok = send_telegram_document(LOG_FILE, caption=caption)
+                    if ok:
+                        last_size = size_now
+            else:
+                print("ℹ️ No log file yet, skipping backup.")
+        except Exception as e:
+            print("❌ Backup worker error:", e)
+
+        time.sleep(max(60, BACKUP_INTERVAL_MIN * 60))
+
+
 # =============== 💙 HEARTBEAT В ТЕЛЕГУ ===============
 def heartbeat_loop():
     sent_today = None
@@ -741,8 +865,10 @@ if __name__ == "__main__":
     # воркеры запускаются в фоне
     threading.Thread(target=cluster_worker, daemon=True).start()
     threading.Thread(target=heartbeat_loop, daemon=True).start()
+    threading.Thread(target=backup_log_worker, daemon=True).start()
 
     # веб-сервер
     app.run(host="0.0.0.0", port=port)
+
 
 
