@@ -519,8 +519,9 @@ def cluster_worker():
             now = time.time()
             cutoff = now - CLUSTER_WINDOW_MIN * 60
 
-            now = time.time()
-            cutoff = now - CLUSTER_WINDOW_MIN * 60
+            if not signals:
+                time.sleep(CHECK_INTERVAL_SEC)
+                continue
 
             print(f"[DEBUG] before cutoff: now={now}, cutoff={cutoff}")
             if signals:
@@ -922,6 +923,7 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     # веб-сервер — только если скрипт запущен напрямую
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
