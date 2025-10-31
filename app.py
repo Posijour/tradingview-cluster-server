@@ -433,7 +433,7 @@ def webhook():
         if ticker and direction in ("UP","DOWN") and tf == VALID_TF:
             now = time.time()
             with lock:
-                signals.append((now, ticker, direction, tf))
+                signals.append((time.time() + 2, ticker, direction, tf))
 
             log_signal(
                 ticker,
@@ -494,7 +494,7 @@ def webhook():
         if ticker and direction in ("UP", "DOWN"):
             now = time.time()
             with lock:
-                signals.append((now, ticker, direction, tf))
+                signals.append((time.time() + 2, ticker, direction, tf))
             log_signal(ticker, direction, tf, typ or "CLUSTER", entry, stop, target)
             print(f"✅ {ticker} {direction} ({tf}) added for cluster window [{typ}]")
             return jsonify({"status": "ok"}), 200
@@ -923,6 +923,7 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     # веб-сервер — только если скрипт запущен напрямую
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
