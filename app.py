@@ -479,14 +479,14 @@ def webhook():
 
         return jsonify({"status": "forwarded"}), 200
 
-    # 2) fallback: вдруг Pine пришлёт без message
-    if typ == "MTF" and tf == VALID_TF:
+    # 2) fallback: 15m импульсы или любые кластеры без message
+    if typ in ("MTF", "CLUSTER", "IMPULSE") and tf == VALID_TF:
         if ticker and direction in ("UP", "DOWN"):
             now = time.time()
             with lock:
                 signals.append((now, ticker, direction, tf))
-            log_signal(ticker, direction, tf, "MTF", entry, stop, target)
-            print(f"✅ {ticker} {direction} ({tf}) added for cluster window")
+            log_signal(ticker, direction, tf, typ or "CLUSTER", entry, stop, target)
+            print(f"✅ {ticker} {direction} ({tf}) added for cluster window [{typ}]")
             return jsonify({"status": "ok"}), 200
 
     # ничего полезного
@@ -896,6 +896,7 @@ if __name__ == "__main__":
 
     # веб-сервер
     app.run(host="0.0.0.0", port=port)
+
 
 
 
