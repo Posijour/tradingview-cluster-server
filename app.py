@@ -494,6 +494,7 @@ def webhook():
 
 # =============== 🧠 КЛАСТЕР-ВОРКЕР ===============
 def cluster_worker():
+    print("⚙️ cluster_worker started")
     while True:
         try:
             # 🧩 DEBUG вывод перед подсчётом
@@ -908,6 +909,7 @@ if __name__ == "__main__":
 
     # веб-сервер
     app.run(host="0.0.0.0", port=port)
+
 
 
 
