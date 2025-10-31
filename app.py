@@ -898,22 +898,13 @@ def root():
 def health():
     return "OK", 200
 
+# 🧠 запускаем фоновые воркеры (работают всегда)
+threading.Thread(target=cluster_worker, daemon=True).start()
+threading.Thread(target=heartbeat_loop, daemon=True).start()
+threading.Thread(target=backup_log_worker, daemon=True).start()
+
 # =============== MAIN ===============
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
-
-    # воркеры запускаются в фоне
-    threading.Thread(target=cluster_worker, daemon=True).start()
-    threading.Thread(target=heartbeat_loop, daemon=True).start()
-    threading.Thread(target=backup_log_worker, daemon=True).start()
-
-    # веб-сервер
+    # веб-сервер — только если скрипт запущен напрямую
     app.run(host="0.0.0.0", port=port)
-
-
-
-
-
-
-
-
