@@ -496,6 +496,18 @@ def webhook():
 def cluster_worker():
     while True:
         try:
+            # 🧩 DEBUG вывод перед подсчётом
+            with lock:
+                print(f"[DEBUG] signals len={len(signals)}")
+                if signals:
+                    tickers = [s[1] for s in signals]
+                    dirs = [s[2] for s in signals]
+                    print(f"[DEBUG] Tickers: {tickers}")
+                    print(f"[DEBUG] Directions: {dirs}")
+
+            now = time.time()
+            cutoff = now - CLUSTER_WINDOW_MIN * 60
+
             now = time.time()
             cutoff = now - CLUSTER_WINDOW_MIN * 60
 
@@ -896,6 +908,7 @@ if __name__ == "__main__":
 
     # веб-сервер
     app.run(host="0.0.0.0", port=port)
+
 
 
 
