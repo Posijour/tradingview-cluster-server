@@ -29,7 +29,7 @@ CLUSTER_COOLDOWN_SEC   = int(os.getenv("CLUSTER_COOLDOWN_SEC", "300"))  # ант
 # Bybit
 BYBIT_API_KEY    = os.getenv("BYBIT_API_KEY", "")
 BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET", "")
-BYBIT_BASE_URL   = os.getenv("BYBIT_BASE_URL", "https://api-testnet.bybit.com")
+BYBIT_BASE_URL   = os.getenv("BYBIT_BASE_URL", "https://api.bybit.com")
 TRADE_ENABLED    = os.getenv("TRADE_ENABLED", "false").lower() == "true"
 MAX_RISK_USDT    = float(os.getenv("MAX_RISK_USDT", "50"))
 LEVERAGE         = float(os.getenv("LEVERAGE", "5"))
@@ -39,6 +39,32 @@ LEVERAGE         = float(os.getenv("LEVERAGE", "5"))
 SYMBOL_WHITELIST = set(
     s.strip().upper() for s in os.getenv("SYMBOL_WHITELIST","").split(",") if s.strip()
 )
+
+# =============== 🔐 BYBIT SIGN FUNCTION (проверенная) ===============
+def _bybit_sign(payload: dict, method: str = "POST", query_string: str = ""):
+    ts = str(int(time.time() * 1000))
+    recv_window = "5000"
+
+    if method.upper() == "POST":
+        body = json.dumps(payload or {}, separators=(",", ":"))
+        pre_sign = ts + BYBIT_API_KEY + recv_window + body
+    else:
+        body = ""
+        pre_sign = ts + BYBIT_API_KEY + recv_window + (query_string or "")
+
+    sign = hmac.new(BYBIT_API_SECRET.encode(), pre_sign.encode(), hashlib.sha256).hexdigest()
+
+    headers = {
+        "X-BAPI-API-KEY": BYBIT_API_KEY,
+        "X-BAPI-SIGN": sign,
+        "X-BAPI-TIMESTAMP": ts,
+        "X-BAPI-RECV-WINDOW": recv_window,
+    }
+
+    if method.upper() == "POST":
+        headers["Content-Type"] = "application/json"
+
+    return headers, body
 
 # Лог-файл
 LOG_FILE = "signals_log.csv"
@@ -190,22 +216,6 @@ def log_signal(ticker, direction, tf, sig_type, entry=None, stop=None, target=No
         print(f"📝 Logged {sig_type} {ticker} {direction} {tf}")
     except Exception as e:
         print("❌ Log error:", e)
-
-# =============== 🔐 BYBIT HELPERS ===============
-def _bybit_sign(payload: dict):
-    ts = str(int(time.time() * 1000))
-    recv_window = "5000"
-    body = json.dumps(payload) if payload else ""
-    pre_sign = ts + BYBIT_API_KEY + recv_window + body
-    sign = hmac.new(BYBIT_API_SECRET.encode(), pre_sign.encode(), hashlib.sha256).hexdigest()
-    headers = {
-        "X-BAPI-API-KEY": BYBIT_API_KEY,
-        "X-BAPI-SIGN": sign,
-        "X-BAPI-TIMESTAMP": ts,
-        "X-BAPI-RECV-WINDOW": recv_window,
-        "Content-Type": "application/json"
-    }
-    return headers, body
 
 def bybit_post(path: str, payload: dict) -> dict:
     url = BYBIT_BASE_URL.rstrip("/") + path
@@ -908,4 +918,5 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     # веб-сервер — только если скрипт запущен напрямую
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
