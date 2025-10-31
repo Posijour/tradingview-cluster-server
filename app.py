@@ -83,34 +83,34 @@ def send_telegram(text: str):
     safe_text = md_escape(text)
     
     def send_telegram_document(filepath: str, caption: str = ""):
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("⚠️ Telegram credentials missing.")
-        return False
-    try:
-        if not os.path.exists(filepath):
-            print(f"⚠️ Document not found: {filepath}")
+        if not TELEGRAM_TOKEN or not CHAT_ID:
+            print("⚠️ Telegram credentials missing.")
             return False
-
-        # Telegram ограничение ~50 МБ на файл. Проверим на всякий.
-        size_mb = os.path.getsize(filepath) / (1024 * 1024)
-        if size_mb > 49.5:
-            print(f"⚠️ File too large for Telegram: {size_mb:.1f} MB")
+        try:
+            if not os.path.exists(filepath):
+                print(f"⚠️ Document not found: {filepath}")
+                return False
+    
+            # Telegram ограничение ~50 МБ на файл. Проверим на всякий.
+            size_mb = os.path.getsize(filepath) / (1024 * 1024)
+            if size_mb > 49.5:
+                print(f"⚠️ File too large for Telegram: {size_mb:.1f} MB")
+                return False
+    
+            files = {"document": (os.path.basename(filepath), open(filepath, "rb"))}
+            data = {"chat_id": CHAT_ID, "caption": caption[:1024]}  # safety: caption <= 1024
+            r = requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument",
+                data=data,
+                files=files,
+                timeout=20
+            )
+            ok = (r.status_code == 200)
+            print("✅ Sent CSV to Telegram" if ok else f"❌ Telegram sendDocument error: {r.text}")
+            return ok
+        except Exception as e:
+            print("❌ Telegram sendDocument exception:", e)
             return False
-
-        files = {"document": (os.path.basename(filepath), open(filepath, "rb"))}
-        data = {"chat_id": CHAT_ID, "caption": caption[:1024]}  # safety: caption <= 1024
-        r = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument",
-            data=data,
-            files=files,
-            timeout=20
-        )
-        ok = (r.status_code == 200)
-        print("✅ Sent CSV to Telegram" if ok else f"❌ Telegram sendDocument error: {r.text}")
-        return ok
-    except Exception as e:
-        print("❌ Telegram sendDocument exception:", e)
-        return False
 
     def _send_with_rate_limit():
         try:
@@ -869,6 +869,7 @@ if __name__ == "__main__":
 
     # веб-сервер
     app.run(host="0.0.0.0", port=port)
+
 
 
 
