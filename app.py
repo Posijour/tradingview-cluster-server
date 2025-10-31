@@ -686,12 +686,12 @@ def stats():
 # =============== 🧪 /simulate — тест руками без TradingView ===============
 @app.route("/simulate", methods=["POST"])
 def simulate():
-    # небольшая защита: можно шлёпать хэш-сигнатуру
+    # разрешаем тот же ?key=... что и в /webhook
     if WEBHOOK_SECRET:
-        sig = request.headers.get("X-Webhook-Signature", "")
-        raw = request.get_data()
-        if not verify_signature(WEBHOOK_SECRET, raw, sig):
+        key = request.args.get("key", "")
+        if key != WEBHOOK_SECRET:
             return "forbidden", 403
+
     try:
         data = request.get_json(force=True, silent=True) or {}
         ticker    = str(data.get("ticker", "BTCUSDT")).upper()
@@ -744,4 +744,5 @@ if __name__ == "__main__":
 
     # веб-сервер
     app.run(host="0.0.0.0", port=port)
+
 
