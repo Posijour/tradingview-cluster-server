@@ -522,6 +522,10 @@ def cluster_worker():
             now = time.time()
             cutoff = now - CLUSTER_WINDOW_MIN * 60
 
+            print(f"[DEBUG] before cutoff: now={now}, cutoff={cutoff}")
+            if signals:
+                print(f"[DEBUG] first={signals[0][0]}, last={signals[-1][0]}, count={len(signals)}")
+
             # чистим старые сигналы и считаем апы/дауны
             with lock:
                 while signals and signals[0][0] < cutoff:
@@ -918,5 +922,6 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     # веб-сервер — только если скрипт запущен напрямую
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
