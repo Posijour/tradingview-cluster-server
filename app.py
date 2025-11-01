@@ -303,9 +303,18 @@ def calc_qty_from_risk(entry: float, stop: float, risk_usdt: float, symbol: str)
 
     return qty
 
-def set_leverage(symbol: str, leverage: float):
-    payload = {"category":"linear", "symbol":symbol, "buyLeverage":str(leverage), "sellLeverage":str(leverage)}
-    return bybit_post("/v5/position/set-leverage", payload)
+def set_leverage(symbol, leverage):
+    try:
+        resp = signed_request("POST", "/v5/position/set-leverage", {
+            "category": "linear",
+            "symbol": symbol,
+            "buyLeverage": str(leverage),
+            "sellLeverage": str(leverage)
+        })
+        if resp["retCode"] not in (0, 110043):
+            print("Bybit error:", resp)
+    except Exception as e:
+        print("❌ Leverage set error:", e)
 
 def place_order_market_with_tp_sl(symbol: str, side: str, qty: float, tp: float, sl: float):
     payload = {
@@ -916,6 +925,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
