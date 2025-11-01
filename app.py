@@ -503,18 +503,18 @@ def webhook():
     return jsonify({"status": "ignored"}), 200
 
 # =============== 🧠 КЛАСТЕР-ВОРКЕР ===============
+last_cluster_trade = {"UP": 0, "DOWN": 0}  # cooldown для авто-трейда
+
 def cluster_worker():
     print("⚙️ cluster_worker started")
 
     while True:
         try:
-            # чтобы не молотил процессор вхолостую при пустом списке
             time.sleep(1)
-
             now = time.time()
             cutoff = now - CLUSTER_WINDOW_MIN * 60
 
-            # выводим только если есть сигналы
+            # ===== DEBUG =====
             with lock:
                 sig_count = len(signals)
                 if sig_count > 0:
@@ -524,7 +524,6 @@ def cluster_worker():
                     print(f"[DEBUG] Tickers: {tickers}")
                     print(f"[DEBUG] Directions: {dirs}")
 
-            # если нет сигналов — просто ждём и не спамим
             if sig_count == 0:
                 time.sleep(CHECK_INTERVAL_SEC)
                 continue
@@ -533,7 +532,7 @@ def cluster_worker():
             if signals:
                 print(f"[DEBUG] first={signals[0][0]}, last={signals[-1][0]}, count={sig_count}")
 
-            # чистим старые сигналы и считаем апы/дауны
+            # ===== чистим и считаем =====
             with lock:
                 while signals and signals[0][0] < cutoff:
                     signals.popleft()
@@ -545,51 +544,55 @@ def cluster_worker():
                         ups.add(t)
                     elif d == "DOWN":
                         downs.add(t)
-                        
+
             print(f"[DEBUG] after cutoff cleanup: total={len(signals)}, ups={len(ups)}, downs={len(downs)}")
 
-            # шлём кластеры в телегу и лог, но не чаще cooldown
+            # ===== отправка кластеров =====
             with state_lock:
-                if len(ups) >= CLUSTER_THRESHOLD:
-                    if now - last_cluster_sent["UP"] >= CLUSTER_COOLDOWN_SEC:
-                        msg = (
-                            f"🟢 *CLUSTER UP* — {len(ups)} из {len(tickers_seen)} монет "
-                            f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
-                            f"📈 {', '.join(sorted(list(ups)))}"
-                        )
-                        send_telegram(msg)
-                        log_signal(",".join(sorted(list(ups))), "UP", VALID_TF, "CLUSTER")
-                        last_cluster_sent["UP"] = now
+                # --- UP cluster ---
+                if len(ups) >= CLUSTER_THRESHOLD and now - last_cluster_sent["UP"] >= CLUSTER_COOLDOWN_SEC:
+                    msg = (
+                        f"🟢 *CLUSTER UP* — {len(ups)} из {len(tickers_seen)} монет "
+                        f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
+                        f"📈 {', '.join(sorted(list(ups)))}"
+                    )
+                    send_telegram(msg)
+                    log_signal(",".join(sorted(list(ups))), "UP", VALID_TF, "CLUSTER")
+                    last_cluster_sent["UP"] = now
 
-                if len(downs) >= CLUSTER_THRESHOLD:
-                    if now - last_cluster_sent["DOWN"] >= CLUSTER_COOLDOWN_SEC:
-                        msg = (
-                            f"🔴 *CLUSTER DOWN* — {len(downs)} из {len(tickers_seen)} монет "
-                            f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
-                            f"📉 {', '.join(sorted(list(downs)))}"
-                        )
-                        send_telegram(msg)
-                        log_signal(",".join(sorted(list(downs))), "DOWN", VALID_TF, "CLUSTER")
-                        last_cluster_sent["DOWN"] = now
+                # --- DOWN cluster ---
+                if len(downs) >= CLUSTER_THRESHOLD and now - last_cluster_sent["DOWN"] >= CLUSTER_COOLDOWN_SEC:
+                    msg = (
+                        f"🔴 *CLUSTER DOWN* — {len(downs)} из {len(tickers_seen)} монет "
+                        f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
+                        f"📉 {', '.join(sorted(list(downs)))}"
+                    )
+                    send_telegram(msg)
+                    log_signal(",".join(sorted(list(downs))), "DOWN", VALID_TF, "CLUSTER")
+                    last_cluster_sent["DOWN"] = now
 
-            # автоторговля по кластерам (если включена)
+            # ===== авто-трейд =====
             if TRADE_ENABLED:
                 try:
                     direction, ticker = None, None
 
-                    # выбираем любую монету из кластера
                     if len(ups) >= CLUSTER_THRESHOLD and ups:
-                        direction = "UP"
-                        ticker = list(ups)[0]
+                        direction, ticker = "UP", list(ups)[0]
                     elif len(downs) >= CLUSTER_THRESHOLD and downs:
-                        direction = "DOWN"
-                        ticker = list(downs)[0]
+                        direction, ticker = "DOWN", list(downs)[0]
 
                     if ticker and direction:
+                        # проверяем cooldown для трейда
+                        if now - last_cluster_trade[direction] < CLUSTER_COOLDOWN_SEC:
+                            print(f"[COOLDOWN] Skipping {direction} cluster trade — too soon.")
+                            time.sleep(CHECK_INTERVAL_SEC)
+                            continue
+
+                        last_cluster_trade[direction] = now  # фиксируем запуск
+
                         if SYMBOL_WHITELIST and ticker not in SYMBOL_WHITELIST:
                             print(f"⛔ {ticker} не в белом списке — пропуск кластерной торговли")
                         else:
-                            # текущая цена
                             resp = requests.get(
                                 f"{BYBIT_BASE_URL}/v5/market/tickers",
                                 params={"category": "linear", "symbol": ticker},
@@ -597,32 +600,23 @@ def cluster_worker():
                             ).json()
                             entry_price = float(resp["result"]["list"][0]["lastPrice"])
 
-                            # ATR-логика для стопа/таргета
                             atr_val = get_atr(ticker, period=14, interval="15")
                             atr_base = get_atr(ticker, period=100, interval="15")
                             vol_scale = max(0.7, min(atr_val / max(atr_base, 0.0001), 1.3))
 
-                            rr_stop   = atr_val * 0.8 * vol_scale
+                            rr_stop = atr_val * 0.8 * vol_scale
                             rr_target = atr_val * 2.4 * vol_scale
 
-                            stop_price   = entry_price + rr_stop   if direction == "UP"   else entry_price - rr_stop
-                            target_price = entry_price - rr_target if direction == "UP"   else entry_price + rr_target
-
+                            stop_price = entry_price + rr_stop if direction == "UP" else entry_price - rr_stop
+                            target_price = entry_price - rr_target if direction == "UP" else entry_price + rr_target
                             side = "Sell" if direction == "UP" else "Buy"
 
                             set_leverage(ticker, LEVERAGE)
                             qty = calc_qty_from_risk(entry_price, stop_price, MAX_RISK_USDT, ticker)
-
                             if qty <= 0:
                                 raise ValueError("Qty <= 0 after normalization")
 
-                            resp2 = place_order_market_with_tp_sl(
-                                ticker,
-                                side,
-                                qty,
-                                target_price,
-                                stop_price
-                            )
+                            resp2 = place_order_market_with_tp_sl(ticker, side, qty, target_price, stop_price)
                             print(f"💥 Cluster auto-trade {ticker} {side} -> TP:{target_price}, SL:{stop_price}")
                             send_telegram(
                                 f"⚡ *CLUSTER AUTO-TRADE*\n"
@@ -637,7 +631,6 @@ def cluster_worker():
             time.sleep(CHECK_INTERVAL_SEC)
 
         except Exception as e:
-            # не умирать вообще никогда
             print("💀 cluster_worker crashed, restarting in 10s:", e)
             time.sleep(10)
 
@@ -940,5 +933,6 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
