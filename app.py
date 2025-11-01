@@ -32,7 +32,7 @@ BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET", "")
 BYBIT_BASE_URL   = os.getenv("BYBIT_BASE_URL", "https://api.bybit.com")
 TRADE_ENABLED    = os.getenv("TRADE_ENABLED", "false").lower() == "true"
 MAX_RISK_USDT    = float(os.getenv("MAX_RISK_USDT", "50"))
-LEVERAGE         = float(os.getenv("LEVERAGE", "5"))
+LEVERAGE         = float(os.getenv("LEVERAGE", "20"))
 
 # если хочешь ограничить автоторговлю на конкретные тикеры:
 # пример: SYMBOL_WHITELIST=BTCUSDT,ETHUSDT,SOLUSDT
@@ -925,6 +925,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
