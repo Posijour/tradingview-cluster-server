@@ -422,30 +422,20 @@ def webhook():
     stop       = payload.get("stop")
     target     = payload.get("target")
 
-    # 1) У тебя Pine всегда присылает красивый текст в message.
-    # Если message есть — это «боевой» сигнал.
+    # 1) боевой сигнал с message
     if msg:
-        # кинуть в телеграм
         send_telegram(msg)
         print(f"📨 Forwarded MTF alert: {ticker} {direction}")
 
-        # лог + добавить в очередь для кластеров
-        if ticker and direction in ("UP","DOWN") and tf == VALID_TF:
-            now = time.time()
+        # === ДОБАВЛЯЕМ СИГНАЛ В ОЧЕРЕДЬ ===
+        if ticker and direction in ("UP", "DOWN") and tf == VALID_TF:
             with lock:
-                signals.append((time.time() + 2, ticker, direction, tf))
+                signals.append((time.time(), ticker, direction, tf))
+                print(f"[WH] queued {ticker} {direction} ({tf}) for cluster window")
 
-            log_signal(
-                ticker,
-                direction,
-                tf,
-                "MTF",
-                entry,
-                stop,
-                target
-            )
+            log_signal(ticker, direction, tf, "WEBHOOK", entry, stop, target)
 
-        # автоторговля по одиночному MTF сигналу
+        # автоторговля по MTF
         if TRADE_ENABLED and typ == "MTF":
             try:
                 if not (ticker and direction in ("UP","DOWN")):
@@ -453,29 +443,11 @@ def webhook():
                 elif SYMBOL_WHITELIST and ticker not in SYMBOL_WHITELIST:
                     print(f"⛔ {ticker} не в белом списке — пропуск")
                 elif entry and stop and target:
-                    # твоя логика контртренда:
-                    # direction "UP" -> шорт
-                    # direction "DOWN" -> лонг
                     side = "Sell" if direction == "UP" else "Buy"
-
                     set_leverage(ticker, LEVERAGE)
-
-                    qty = calc_qty_from_risk(
-                        float(entry),
-                        float(stop),
-                        MAX_RISK_USDT,
-                        ticker
-                    )
-
+                    qty = calc_qty_from_risk(float(entry), float(stop), MAX_RISK_USDT, ticker)
                     if qty > 0:
-                        resp = place_order_market_with_tp_sl(
-                            ticker,
-                            side,
-                            qty,
-                            float(target),
-                            float(stop)
-                        )
-                        print("Bybit order resp:", resp)
+                        place_order_market_with_tp_sl(ticker, side, qty, float(target), float(stop))
                         send_telegram(
                             f"🚀 *AUTO-TRADE*\n"
                             f"{ticker} {side}\n"
@@ -488,6 +460,18 @@ def webhook():
                 print("Trade error:", e)
 
         return jsonify({"status": "forwarded"}), 200
+
+    # 2) fallback: кластеры или импульсы без message
+    if typ in ("MTF", "CLUSTER", "IMPULSE") and tf == VALID_TF:
+        if ticker and direction in ("UP", "DOWN"):
+            with lock:
+                signals.append((time.time(), ticker, direction, tf))
+                print(f"[WH] queued {ticker} {direction} ({tf}) for cluster window")
+
+            log_signal(ticker, direction, tf, typ or "CLUSTER", entry, stop, target)
+            return jsonify({"status": "ok"}), 200
+
+    return jsonify({"status": "ignored"}), 200
 
     # 2) fallback: 15m импульсы или любые кластеры без message
     if typ in ("MTF", "CLUSTER", "IMPULSE") and tf == VALID_TF:
@@ -947,6 +931,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
