@@ -488,7 +488,6 @@ def webhook():
 
 # =============== 🧠 КЛАСТЕР-ВОРКЕР ===============
 last_cluster_trade = {"UP": 0, "DOWN": 0}
-active_clusters = {"UP": set(), "DOWN": set()}  # запоминаем состав, чтобы не спамить
 
 def cluster_worker():
     print("⚙️ cluster_worker started")
@@ -500,18 +499,16 @@ def cluster_worker():
 
             # --- снапшот очереди + чистка старья
             with lock:
-                # выпиливаем протухшие
                 while signals and signals[0][0] < cutoff:
                     signals.popleft()
                 snapshot = list(signals)
 
             sig_count = len(snapshot)
             if sig_count == 0:
-                # пусто — вообще ничего не делаем
                 time.sleep(CHECK_INTERVAL_SEC)
                 continue
 
-            # отладка
+            # --- отладка
             try:
                 tickers_dbg = [s[1] for s in snapshot]
                 dirs_dbg = [s[2] for s in snapshot]
@@ -533,70 +530,41 @@ def cluster_worker():
 
             print(f"[DEBUG] total={sig_count}, ups={len(ups)}, downs={len(downs)}")
 
-            # --- уведомления о кластерах (память по составу)
-            with state_lock:
-                # UP
-                if len(ups) >= CLUSTER_THRESHOLD:
-                    if ups != active_clusters["UP"]:
-                        active_clusters["UP"] = set(ups)
-                        send_telegram(
-                            f"🟢 *CLUSTER UP* — {len(ups)} из {len(tickers_seen)} монет "
-                            f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
-                            f"📈 {', '.join(sorted(list(ups)))}"
-                        )
-                        log_signal(",".join(sorted(list(ups))), "UP", VALID_TF, "CLUSTER")
-                        last_cluster_sent["UP"] = now
-                    else:
-                        print("[COOLDOWN] duplicate UP cluster ignored")
-                else:
-                    # кластер распался — забываем состав
-                    if active_clusters["UP"]:
-                        print("[RESET] UP cluster cleared")
-                    active_clusters["UP"].clear()
+            # --- уведомления о кластерах (простые)
+            if len(ups) >= CLUSTER_THRESHOLD:
+                send_telegram(
+                    f"🟢 *CLUSTER UP* — {len(ups)} из {len(tickers_seen)} монет "
+                    f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
+                    f"📈 {', '.join(sorted(list(ups)))}"
+                )
+                log_signal(",".join(sorted(list(ups))), "UP", VALID_TF, "CLUSTER")
+                last_cluster_sent["UP"] = now
 
-                # DOWN
-                if len(downs) >= CLUSTER_THRESHOLD:
-                    if downs != active_clusters["DOWN"]:
-                        active_clusters["DOWN"] = set(downs)
-                        send_telegram(
-                            f"🔴 *CLUSTER DOWN* — {len(downs)} из {len(tickers_seen)} монет "
-                            f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
-                            f"📉 {', '.join(sorted(list(downs)))}"
-                        )
-                        log_signal(",".join(sorted(list(downs))), "DOWN", VALID_TF, "CLUSTER")
-                        last_cluster_sent["DOWN"] = now
-                    else:
-                        print("[COOLDOWN] duplicate DOWN cluster ignored")
-                else:
-                    if active_clusters["DOWN"]:
-                        print("[RESET] DOWN cluster cleared")
-                    active_clusters["DOWN"].clear()
+            if len(downs) >= CLUSTER_THRESHOLD:
+                send_telegram(
+                    f"🔴 *CLUSTER DOWN* — {len(downs)} из {len(tickers_seen)} монет "
+                    f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
+                    f"📉 {', '.join(sorted(list(downs)))}"
+                )
+                log_signal(",".join(sorted(list(downs))), "DOWN", VALID_TF, "CLUSTER")
+                last_cluster_sent["DOWN"] = now
 
-            # --- автоторговля по кластерам (с общий кулдауном на направление)
+            # --- автоторговля по кластерам (только кулдаун по времени)
             if TRADE_ENABLED:
                 try:
                     direction, ticker = None, None
-                    cluster_tickers = None
 
                     if len(ups) >= CLUSTER_THRESHOLD and ups:
-                        direction, ticker, cluster_tickers = "UP", list(ups)[0], set(ups)
+                        direction, ticker = "UP", list(ups)[0]
                     elif len(downs) >= CLUSTER_THRESHOLD and downs:
-                        direction, ticker, cluster_tickers = "DOWN", list(downs)[0], set(downs)
+                        direction, ticker = "DOWN", list(downs)[0]
 
                     if ticker and direction:
-                        # если кластер не изменился — не торговать снова
-                        if cluster_tickers == active_clusters[direction]:
-                            print(f"[SKIP] {direction} cluster unchanged — no new trade.")
-                            continue
-
-                        # кулдаун на направление
                         if now - last_cluster_trade[direction] < CLUSTER_COOLDOWN_SEC:
-                            print(f"[COOLDOWN] Skipping {direction} trade — too soon.")
+                            print(f"[COOLDOWN] Skipping {direction} trade — waiting cooldown.")
                             continue
 
-                        # обновляем "активный" кластер и время последнего трейда
                         last_cluster_trade[direction] = now
-                        active_clusters[direction] = cluster_tickers
 
                         if SYMBOL_WHITELIST and ticker not in SYMBOL_WHITELIST:
                             print(f"⛔ {ticker} вне белого списка — пропуск")
@@ -636,11 +604,9 @@ def cluster_worker():
                 except Exception as e:
                     print("❌ Cluster auto-trade error:", e)
 
-            # пауза между циклами, чтобы не спамил
             time.sleep(CHECK_INTERVAL_SEC)
 
         except Exception as e:
-            # не умирать вообще никогда
             print("💀 cluster_worker crashed, restarting in 10s:", e)
             time.sleep(10)
             
@@ -944,6 +910,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
