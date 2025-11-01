@@ -67,7 +67,7 @@ def _bybit_sign(payload: dict, method: str = "POST", query_string: str = ""):
     return headers, body
 
 # Лог-файл
-LOG_FILE = "signals_log.csv"
+LOG_FILE = "/tmp/signals_log.csv"
 
 # =============== 🧠 ГЛОБАЛЬНЫЕ СТРУКТУРЫ СОСТОЯНИЯ ===============
 signals = deque(maxlen=5000)  # (timestamp, ticker, direction, tf)
@@ -923,6 +923,7 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     # веб-сервер — только если скрипт запущен напрямую
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
