@@ -545,6 +545,8 @@ def cluster_worker():
                         ups.add(t)
                     elif d == "DOWN":
                         downs.add(t)
+                        
+            print(f"[DEBUG] after cutoff cleanup: total={len(signals)}, ups={len(ups)}, downs={len(downs)}")
 
             # шлём кластеры в телегу и лог, но не чаще cooldown
             with state_lock:
@@ -871,14 +873,17 @@ def stats():
 # =============== 🧪 /simulate — тест руками без TradingView ===============
 @app.route("/simulate", methods=["POST"])
 def simulate():
-    # разрешаем тот же ?key=... что и в /webhook
+    # тот же ключ, что и у /webhook
     if WEBHOOK_SECRET:
         key = request.args.get("key", "")
         if key != WEBHOOK_SECRET:
+            print("❌ /simulate forbidden: wrong key")
             return "forbidden", 403
 
     try:
+        print("🚀 /simulate endpoint hit — request received")
         data = request.get_json(force=True, silent=True) or {}
+
         ticker    = str(data.get("ticker", "BTCUSDT")).upper()
         direction = str(data.get("direction", "UP")).upper()
         entry     = float(data.get("entry", 68000))
@@ -886,6 +891,15 @@ def simulate():
         target    = float(data.get("target", 69000))
         tf        = str(data.get("tf", VALID_TF))
 
+        # кладём в очередь для кластер-воркера
+        now_ts = time.time()
+        with lock:
+            signals.append((now_ts, ticker, direction, tf))
+            q_len = len(signals)
+
+        print(f"📥 queued: {(now_ts, ticker, direction, tf)} | signals_len={q_len}")
+
+        # лог в CSV + сообщение в Телеграм
         msg = (
             f"📊 *SIMULATED SIGNAL*\n"
             f"{ticker} {direction} ({tf})\n"
@@ -896,9 +910,12 @@ def simulate():
         log_signal(ticker, direction, tf, "SIMULATED", entry, stop, target)
         send_telegram(msg)
 
-        print(f"🧪 Simulated signal sent for {ticker} {direction}")
+        print(f"✅ Simulated signal sent for {ticker} {direction} | signals_len={q_len}")
+        print(f"📩 Simulated data: {data}")
+
         return jsonify({
             "status": "ok",
+            "queued_len": q_len,
             "ticker": ticker,
             "direction": direction,
             "entry": entry,
@@ -908,6 +925,7 @@ def simulate():
         }), 200
 
     except Exception as e:
+        print("❌ /simulate error:", e)
         return jsonify({"status": "error", "error": str(e)}), 500
 
 # =============== HEALTH / HEARTBEAT ===============
@@ -933,3 +951,4 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
