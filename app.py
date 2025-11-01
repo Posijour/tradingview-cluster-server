@@ -24,7 +24,7 @@ CLUSTER_THRESHOLD      = int(os.getenv("CLUSTER_THRESHOLD", "6"))       # ско
 CHECK_INTERVAL_SEC     = int(os.getenv("CHECK_INTERVAL_SEC", "60"))     # как часто воркер проверяет
 VALID_TF               = os.getenv("VALID_TF", "15m")                   # какой tf мы вообще учитываем
 WEBHOOK_SECRET         = os.getenv("WEBHOOK_SECRET", "")                # защита /webhook?key=...
-CLUSTER_COOLDOWN_SEC   = int(os.getenv("CLUSTER_COOLDOWN_SEC", "300"))  # антиспам для кластеров
+CLUSTER_COOLDOWN_SEC   = int(os.getenv("CLUSTER_COOLDOWN_SEC", "60"))  # антиспам для кластеров
 
 # Bybit
 BYBIT_API_KEY    = os.getenv("BYBIT_API_KEY", "")
@@ -947,6 +947,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
