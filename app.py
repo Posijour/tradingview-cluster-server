@@ -530,24 +530,30 @@ def cluster_worker():
 
             print(f"[DEBUG] total={sig_count}, ups={len(ups)}, downs={len(downs)}")
 
-            # --- уведомления о кластерах (простые)
+            # --- уведомления о кластерах (с cooldown, но без состава)
             if len(ups) >= CLUSTER_THRESHOLD:
-                send_telegram(
-                    f"🟢 *CLUSTER UP* — {len(ups)} из {len(tickers_seen)} монет "
-                    f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
-                    f"📈 {', '.join(sorted(list(ups)))}"
-                )
-                log_signal(",".join(sorted(list(ups))), "UP", VALID_TF, "CLUSTER")
-                last_cluster_sent["UP"] = now
-
+                if now - last_cluster_sent["UP"] > CLUSTER_WINDOW_MIN * 60:
+                    send_telegram(
+                        f"🟢 *CLUSTER UP* — {len(ups)} из {len(tickers_seen)} монет "
+                        f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
+                        f"📈 {', '.join(sorted(list(ups)))}"
+                    )
+                    log_signal(",".join(sorted(list(ups))), "UP", VALID_TF, "CLUSTER")
+                    last_cluster_sent["UP"] = now
+                else:
+                    print("[COOLDOWN] skip UP cluster notify")
+            
             if len(downs) >= CLUSTER_THRESHOLD:
-                send_telegram(
-                    f"🔴 *CLUSTER DOWN* — {len(downs)} из {len(tickers_seen)} монет "
-                    f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
-                    f"📉 {', '.join(sorted(list(downs)))}"
-                )
-                log_signal(",".join(sorted(list(downs))), "DOWN", VALID_TF, "CLUSTER")
-                last_cluster_sent["DOWN"] = now
+                if now - last_cluster_sent["DOWN"] > CLUSTER_WINDOW_MIN * 60:
+                    send_telegram(
+                        f"🔴 *CLUSTER DOWN* — {len(downs)} из {len(tickers_seen)} монет "
+                        f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
+                        f"📉 {', '.join(sorted(list(downs)))}"
+                    )
+                    log_signal(",".join(sorted(list(downs))), "DOWN", VALID_TF, "CLUSTER")
+                    last_cluster_sent["DOWN"] = now
+                else:
+                    print("[COOLDOWN] skip DOWN cluster notify")
 
             # --- автоторговля по кластерам (только кулдаун по времени)
             if TRADE_ENABLED:
@@ -910,6 +916,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
