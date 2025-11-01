@@ -633,9 +633,16 @@ def cluster_worker():
                             f"Qty: {qty}\n"
                             f"Entry~{entry_price}\nTP: {target_price}\nSL: {stop_price}"
                         )
-
                 except Exception as e:
                     print("❌ Cluster auto-trade error:", e)
+
+            # пауза между циклами, чтобы не спамил
+            time.sleep(CHECK_INTERVAL_SEC)
+
+        except Exception as e:
+            # не умирать вообще никогда
+            print("💀 cluster_worker crashed, restarting in 10s:", e)
+            time.sleep(10)
             
 # =============== ВОРКЕР БЕКАПА ===============
 def backup_log_worker():
@@ -937,6 +944,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
