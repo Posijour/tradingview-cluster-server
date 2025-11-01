@@ -503,7 +503,8 @@ def webhook():
     return jsonify({"status": "ignored"}), 200
 
 # =============== 🧠 КЛАСТЕР-ВОРКЕР ===============
-last_cluster_trade = {"UP": 0, "DOWN": 0}  # cooldown для авто-трейда
+last_cluster_trade = {"UP": 0, "DOWN": 0}
+active_clusters = {"UP": set(), "DOWN": set()}  # чтобы не спамил одно и то же
 
 def cluster_worker():
     print("⚙️ cluster_worker started")
@@ -514,7 +515,7 @@ def cluster_worker():
             now = time.time()
             cutoff = now - CLUSTER_WINDOW_MIN * 60
 
-            # ===== DEBUG =====
+            # --- Debug вывод ---
             with lock:
                 sig_count = len(signals)
                 if sig_count > 0:
@@ -528,11 +529,7 @@ def cluster_worker():
                 time.sleep(CHECK_INTERVAL_SEC)
                 continue
 
-            print(f"[DEBUG] before cutoff: now={now}, cutoff={cutoff}")
-            if signals:
-                print(f"[DEBUG] first={signals[0][0]}, last={signals[-1][0]}, count={sig_count}")
-
-            # ===== чистим и считаем =====
+            # --- Очистка старых сигналов ---
             with lock:
                 while signals and signals[0][0] < cutoff:
                     signals.popleft()
@@ -545,85 +542,102 @@ def cluster_worker():
                     elif d == "DOWN":
                         downs.add(t)
 
-            print(f"[DEBUG] after cutoff cleanup: total={len(signals)}, ups={len(ups)}, downs={len(downs)}")
+            # --- Отладка ---
+            print(f"[DEBUG] total={len(signals)}, ups={len(ups)}, downs={len(downs)}")
 
-            # ===== отправка кластеров =====
+            # --- Проверяем кластеры ---
             with state_lock:
-                # --- UP cluster ---
-                if len(ups) >= CLUSTER_THRESHOLD and now - last_cluster_sent["UP"] >= CLUSTER_COOLDOWN_SEC:
-                    msg = (
-                        f"🟢 *CLUSTER UP* — {len(ups)} из {len(tickers_seen)} монет "
-                        f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
-                        f"📈 {', '.join(sorted(list(ups)))}"
-                    )
-                    send_telegram(msg)
-                    log_signal(",".join(sorted(list(ups))), "UP", VALID_TF, "CLUSTER")
-                    last_cluster_sent["UP"] = now
+                # === CLUSTER UP ===
+                if len(ups) >= CLUSTER_THRESHOLD:
+                    # если новый состав кластера (или пустой ранее)
+                    if ups != active_clusters["UP"]:
+                        active_clusters["UP"] = set(ups)
+                        msg = (
+                            f"🟢 *CLUSTER UP* — {len(ups)} из {len(tickers_seen)} монет "
+                            f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
+                            f"📈 {', '.join(sorted(list(ups)))}"
+                        )
+                        send_telegram(msg)
+                        log_signal(",".join(sorted(list(ups))), "UP", VALID_TF, "CLUSTER")
+                        last_cluster_sent["UP"] = now
+                    else:
+                        print("[COOLDOWN] Skipping duplicate UP cluster")
 
-                # --- DOWN cluster ---
-                if len(downs) >= CLUSTER_THRESHOLD and now - last_cluster_sent["DOWN"] >= CLUSTER_COOLDOWN_SEC:
-                    msg = (
-                        f"🔴 *CLUSTER DOWN* — {len(downs)} из {len(tickers_seen)} монет "
-                        f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
-                        f"📉 {', '.join(sorted(list(downs)))}"
-                    )
-                    send_telegram(msg)
-                    log_signal(",".join(sorted(list(downs))), "DOWN", VALID_TF, "CLUSTER")
-                    last_cluster_sent["DOWN"] = now
+                else:
+                    # кластер рассосался — можно снова разрешать
+                    active_clusters["UP"].clear()
 
-            # ===== авто-трейд =====
+                # === CLUSTER DOWN ===
+                if len(downs) >= CLUSTER_THRESHOLD:
+                    if downs != active_clusters["DOWN"]:
+                        active_clusters["DOWN"] = set(downs)
+                        msg = (
+                            f"🔴 *CLUSTER DOWN* — {len(downs)} из {len(tickers_seen)} монет "
+                            f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
+                            f"📉 {', '.join(sorted(list(downs)))}"
+                        )
+                        send_telegram(msg)
+                        log_signal(",".join(sorted(list(downs))), "DOWN", VALID_TF, "CLUSTER")
+                        last_cluster_sent["DOWN"] = now
+                    else:
+                        print("[COOLDOWN] Skipping duplicate DOWN cluster")
+
+                else:
+                    active_clusters["DOWN"].clear()
+
+            # --- Автоторговля ---
             if TRADE_ENABLED:
                 try:
                     direction, ticker = None, None
-
                     if len(ups) >= CLUSTER_THRESHOLD and ups:
                         direction, ticker = "UP", list(ups)[0]
                     elif len(downs) >= CLUSTER_THRESHOLD and downs:
                         direction, ticker = "DOWN", list(downs)[0]
 
                     if ticker and direction:
-                        # проверяем cooldown для трейда
+                        # cooldown трейда
                         if now - last_cluster_trade[direction] < CLUSTER_COOLDOWN_SEC:
                             print(f"[COOLDOWN] Skipping {direction} cluster trade — too soon.")
-                            time.sleep(CHECK_INTERVAL_SEC)
                             continue
+                        last_cluster_trade[direction] = now
 
-                        last_cluster_trade[direction] = now  # фиксируем запуск
-
+                        # белый список
                         if SYMBOL_WHITELIST and ticker not in SYMBOL_WHITELIST:
                             print(f"⛔ {ticker} не в белом списке — пропуск кластерной торговли")
-                        else:
-                            resp = requests.get(
-                                f"{BYBIT_BASE_URL}/v5/market/tickers",
-                                params={"category": "linear", "symbol": ticker},
-                                timeout=5
-                            ).json()
-                            entry_price = float(resp["result"]["list"][0]["lastPrice"])
+                            continue
 
-                            atr_val = get_atr(ticker, period=14, interval="15")
-                            atr_base = get_atr(ticker, period=100, interval="15")
-                            vol_scale = max(0.7, min(atr_val / max(atr_base, 0.0001), 1.3))
+                        # данные по рынку
+                        resp = requests.get(
+                            f"{BYBIT_BASE_URL}/v5/market/tickers",
+                            params={"category": "linear", "symbol": ticker},
+                            timeout=5
+                        ).json()
+                        entry_price = float(resp["result"]["list"][0]["lastPrice"])
 
-                            rr_stop = atr_val * 0.8 * vol_scale
-                            rr_target = atr_val * 2.4 * vol_scale
+                        atr_val = get_atr(ticker, period=14, interval="15")
+                        atr_base = get_atr(ticker, period=100, interval="15")
+                        vol_scale = max(0.7, min(atr_val / max(atr_base, 0.0001), 1.3))
 
-                            stop_price = entry_price + rr_stop if direction == "UP" else entry_price - rr_stop
-                            target_price = entry_price - rr_target if direction == "UP" else entry_price + rr_target
-                            side = "Sell" if direction == "UP" else "Buy"
+                        rr_stop = atr_val * 0.8 * vol_scale
+                        rr_target = atr_val * 2.4 * vol_scale
 
-                            set_leverage(ticker, LEVERAGE)
-                            qty = calc_qty_from_risk(entry_price, stop_price, MAX_RISK_USDT, ticker)
-                            if qty <= 0:
-                                raise ValueError("Qty <= 0 after normalization")
+                        stop_price = entry_price + rr_stop if direction == "UP" else entry_price - rr_stop
+                        target_price = entry_price - rr_target if direction == "UP" else entry_price + rr_target
+                        side = "Sell" if direction == "UP" else "Buy"
 
-                            resp2 = place_order_market_with_tp_sl(ticker, side, qty, target_price, stop_price)
-                            print(f"💥 Cluster auto-trade {ticker} {side} -> TP:{target_price}, SL:{stop_price}")
-                            send_telegram(
-                                f"⚡ *CLUSTER AUTO-TRADE*\n"
-                                f"{ticker} {side}\n"
-                                f"Qty: {qty}\n"
-                                f"Entry~{entry_price}\nTP: {target_price}\nSL: {stop_price}"
-                            )
+                        set_leverage(ticker, LEVERAGE)
+                        qty = calc_qty_from_risk(entry_price, stop_price, MAX_RISK_USDT, ticker)
+                        if qty <= 0:
+                            raise ValueError("Qty <= 0 after normalization")
+
+                        place_order_market_with_tp_sl(ticker, side, qty, target_price, stop_price)
+                        print(f"💥 Cluster auto-trade {ticker} {side} -> TP:{target_price}, SL:{stop_price}")
+                        send_telegram(
+                            f"⚡ *CLUSTER AUTO-TRADE*\n"
+                            f"{ticker} {side}\n"
+                            f"Qty: {qty}\n"
+                            f"Entry~{entry_price}\nTP: {target_price}\nSL: {stop_price}"
+                        )
 
                 except Exception as e:
                     print("❌ Cluster auto-trade error:", e)
@@ -933,6 +947,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
