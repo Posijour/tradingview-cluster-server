@@ -921,18 +921,15 @@ def health():
 
 # =============== MAIN ===============
 if __name__ == "__main__":
-    # Запуск фоновых потоков только при локальном запуске
+    print("🚀 Starting Flask app in single-process mode")
+
+    # Запуск фоновых потоков (в одном процессе)
     threading.Thread(target=cluster_worker, daemon=True).start()
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     threading.Thread(target=backup_log_worker, daemon=True).start()
+
+    # Получаем порт от Render (или 8080 локально)
     port = int(os.getenv("PORT", "8080"))
+
+    # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
-else:
-    # Для Render / Gunicorn — только один воркер запустит фоны
-    if os.getenv("IS_PRIMARY_WORKER", "true").lower() == "true":
-        print("🧠 Primary worker — starting background threads")
-        threading.Thread(target=cluster_worker, daemon=True).start()
-        threading.Thread(target=heartbeat_loop, daemon=True).start()
-        threading.Thread(target=backup_log_worker, daemon=True).start()
-    else:
-        print("🚫 Secondary worker — skipping background threads")
