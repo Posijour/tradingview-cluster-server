@@ -505,27 +505,33 @@ def webhook():
 # =============== 🧠 КЛАСТЕР-ВОРКЕР ===============
 def cluster_worker():
     print("⚙️ cluster_worker started")
+
     while True:
         try:
-            # 🧩 DEBUG вывод перед подсчётом
+            # чтобы не молотил процессор вхолостую при пустом списке
+            time.sleep(1)
+
+            now = time.time()
+            cutoff = now - CLUSTER_WINDOW_MIN * 60
+
+            # выводим только если есть сигналы
             with lock:
-                print(f"[DEBUG] signals len={len(signals)}")
-                if signals:
+                sig_count = len(signals)
+                if sig_count > 0:
+                    print(f"[DEBUG] signals len={sig_count}")
                     tickers = [s[1] for s in signals]
                     dirs = [s[2] for s in signals]
                     print(f"[DEBUG] Tickers: {tickers}")
                     print(f"[DEBUG] Directions: {dirs}")
 
-            now = time.time()
-            cutoff = now - CLUSTER_WINDOW_MIN * 60
-
-            if not signals:
+            # если нет сигналов — просто ждём и не спамим
+            if sig_count == 0:
                 time.sleep(CHECK_INTERVAL_SEC)
                 continue
 
             print(f"[DEBUG] before cutoff: now={now}, cutoff={cutoff}")
             if signals:
-                print(f"[DEBUG] first={signals[0][0]}, last={signals[-1][0]}, count={len(signals)}")
+                print(f"[DEBUG] first={signals[0][0]}, last={signals[-1][0]}, count={sig_count}")
 
             # чистим старые сигналы и считаем апы/дауны
             with lock:
@@ -923,6 +929,7 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     # веб-сервер — только если скрипт запущен напрямую
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
