@@ -331,6 +331,59 @@ def place_order_market_with_tp_sl(symbol: str, side: str, qty: float, tp: float,
     }
     return bybit_post("/v5/order/create", payload)
 
+def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_price: float, sl_price: float):
+    """
+    Открывает рыночную позицию и выставляет лимитные TP/SL ордера (reduceOnly=True).
+    """
+    try:
+        # 1. Открываем позицию
+        resp_open = bybit_post("/v5/order/create", {
+            "category": "linear",
+            "symbol": symbol,
+            "side": side,
+            "orderType": "Market",
+            "qty": str(qty),
+            "timeInForce": "GoodTillCancel"
+        })
+        print("✅ Market entry:", resp_open)
+
+        # 2. Определяем обратную сторону для закрытия
+        close_side = "Sell" if side == "Buy" else "Buy"
+
+        # 3. Лимитный Take Profit
+        tp_payload = {
+            "category": "linear",
+            "symbol": symbol,
+            "side": close_side,
+            "orderType": "Limit",
+            "qty": str(qty),
+            "price": str(tp_price),
+            "reduceOnly": True,
+            "timeInForce": "GoodTillCancel"
+        }
+        resp_tp = bybit_post("/v5/order/create", tp_payload)
+        print("✅ TP limit order:", resp_tp)
+
+        # 4. Лимитный Stop Loss
+        sl_payload = {
+            "category": "linear",
+            "symbol": symbol,
+            "side": close_side,
+            "orderType": "Limit",
+            "qty": str(qty),
+            "price": str(sl_price),
+            "reduceOnly": True,
+            "timeInForce": "GoodTillCancel"
+        }
+        resp_sl = bybit_post("/v5/order/create", sl_payload)
+        print("✅ SL limit order:", resp_sl)
+
+        return {"entry": resp_open, "tp": resp_tp, "sl": resp_sl}
+
+    except Exception as e:
+        print("❌ place_order_market_with_limit_tp_sl error:", e)
+        return None
+
 def get_atr(symbol: str, period: int = 14, interval: str = "15", limit: int = 100) -> float:
     """
     ATR по реальным свечам Bybit.
@@ -456,7 +509,7 @@ def webhook():
                     set_leverage(ticker, LEVERAGE)
                     qty = calc_qty_from_risk(float(entry), float(stop), MAX_RISK_USDT, ticker)
                     if qty > 0:
-                        place_order_market_with_tp_sl(ticker, side, qty, float(target), float(stop))
+                        place_order_market_with_limit_tp_sl(ticker, side, qty, float(target), float(stop))
                         send_telegram(
                             f"🚀 *AUTO-TRADE*\n"
                             f"{ticker} {side}\n"
@@ -608,7 +661,7 @@ def cluster_worker():
                         if qty <= 0:
                             raise ValueError("Qty <= 0 after normalization")
 
-                        place_order_market_with_tp_sl(ticker, side, qty, target_price, stop_price)
+                        place_order_market_with_limit_tp_sl(ticker, side, qty, target_price, stop_price)
                         print(f"💥 Cluster auto-trade {ticker} {side} -> TP:{target_price}, SL:{stop_price}")
                         send_telegram(
                             f"⚡ *CLUSTER AUTO-TRADE*\n"
@@ -925,6 +978,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
