@@ -304,17 +304,28 @@ def calc_qty_from_risk(entry: float, stop: float, risk_usdt: float, symbol: str)
     return qty
 
 def set_leverage(symbol, leverage):
+    """
+    Устанавливает плечо на Bybit (оба направления).
+    """
     try:
-        resp = signed_request("POST", "/v5/position/set-leverage", {
+        payload = {
             "category": "linear",
             "symbol": symbol,
             "buyLeverage": str(leverage),
             "sellLeverage": str(leverage)
-        })
-        if resp["retCode"] not in (0, 110043):
-            print("Bybit error:", resp)
+        }
+        headers, body = _bybit_sign(payload)
+        url = BYBIT_BASE_URL.rstrip("/") + "/v5/position/set-leverage"
+        r = requests.post(url, headers=headers, data=body, timeout=5)
+        resp = r.json()
+
+        if resp.get("retCode") not in (0, 110043):
+            print("❌ Bybit leverage set error:", resp)
+        else:
+            print(f"✅ Leverage {leverage}x set for {symbol}")
+
     except Exception as e:
-        print("❌ Leverage set error:", e)
+        print("❌ Leverage set exception:", e)
 
 def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_price: float, sl_price: float):
     """
@@ -567,16 +578,6 @@ def webhook():
             return jsonify({"status": "ok"}), 200
 
     return jsonify({"status": "ignored"}), 200
-
-    # 2) fallback: 15m импульсы или любые кластеры без message
-    if typ in ("MTF", "CLUSTER", "IMPULSE") and tf == VALID_TF:
-        if ticker and direction in ("UP", "DOWN"):
-            now = time.time()
-            with lock:
-                signals.append((time.time() + 2, ticker, direction, tf))
-            log_signal(ticker, direction, tf, typ or "CLUSTER", entry, stop, target)
-            print(f"✅ {ticker} {direction} ({tf}) added for cluster window [{typ}]")
-            return jsonify({"status": "ok"}), 200
 
     # ничего полезного
     return jsonify({"status": "ignored"}), 200
@@ -1011,6 +1012,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
