@@ -691,7 +691,7 @@ def cluster_worker():
                         vol_scale = max(0.7, min(atr_val / max(atr_base, 0.0001), 1.3))
 
                         rr_stop   = atr_val * 0.8 * vol_scale
-                        rr_target = atr_val * 2.4 * vol_scale
+                        rr_target = atr_val * 3.0 * vol_scale
 
                         stop_price   = entry_price + rr_stop   if direction == "UP" else entry_price - rr_stop
                         target_price = entry_price - rr_target if direction == "UP" else entry_price + rr_target
@@ -1019,6 +1019,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
