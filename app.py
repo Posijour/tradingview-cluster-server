@@ -316,21 +316,6 @@ def set_leverage(symbol, leverage):
     except Exception as e:
         print("❌ Leverage set error:", e)
 
-def place_order_market_with_tp_sl(symbol: str, side: str, qty: float, tp: float, sl: float):
-    payload = {
-        "category": "linear",
-        "symbol": symbol,
-        "side": side,            # "Buy" | "Sell"
-        "orderType": "Market",
-        "qty": str(qty),
-        "timeInForce": "GoodTillCancel",
-        "tpSlMode": "Full",
-        "takeProfit": str(tp),
-        "stopLoss": str(sl),
-        "reduceOnly": False
-    }
-    return bybit_post("/v5/order/create", payload)
-
 def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_price: float, sl_price: float):
     """
     Открывает рыночную позицию и ставит отдельные лимитные ордера для TP и SL.
@@ -492,7 +477,7 @@ def webhook():
    # 1) боевой сигнал с message
     if msg:
         # === фильтрация старых уведомлений ===
-        MAX_SIGNAL_AGE_SEC = 600  # 10 минут
+        MAX_SIGNAL_AGE_SEC = 3600  # 60 минут
         signal_time = None
     
         # TradingView может прислать время в payload
@@ -534,26 +519,6 @@ def webhook():
                 if not all([entry, stop, target]):
                     print("ℹ️ Нет entry/stop/target — пропуск автоторговли")
                     return jsonify({"status": "skipped"}), 200
-
-                # === ограничение по возрасту сигнала ===
-                MAX_MTF_SIGNAL_AGE_SEC = 3600  # 60 минут
-                signal_time = None
-
-                # если Pine отправляет время — парсим
-                if "time" in payload:
-                    try:
-                        signal_time = float(payload["time"])
-                    except Exception:
-                        pass
-
-                # если нет — считаем текущее время сигналом
-                if not signal_time:
-                    signal_time = time.time()
-
-                age = time.time() - signal_time
-                if age > MAX_MTF_SIGNAL_AGE_SEC:
-                    print(f"⏳ MTF signal too old ({int(age)}s) — skipping trade")
-                    return jsonify({"status": "ignored", "reason": "mtf_too_old"}), 200
 
                 # определяем сторону
                 side = "Sell" if direction == "UP" else "Buy"
@@ -1046,6 +1011,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
