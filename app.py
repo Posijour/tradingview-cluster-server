@@ -25,6 +25,7 @@ CHECK_INTERVAL_SEC     = int(os.getenv("CHECK_INTERVAL_SEC", "10"))     # как
 VALID_TF               = os.getenv("VALID_TF", "15m")                   # какой tf мы вообще учитываем
 WEBHOOK_SECRET         = os.getenv("WEBHOOK_SECRET", "")                # защита /webhook?key=...
 CLUSTER_COOLDOWN_SEC = CLUSTER_WINDOW_MIN * 60
+CLUSTER_TRADE_DELAY_SEC = int(os.getenv("CLUSTER_TRADE_DELAY_SEC", "600"))  # 10 минут
 
 # Bybit
 BYBIT_API_KEY    = os.getenv("BYBIT_API_KEY", "")
@@ -666,6 +667,12 @@ def cluster_worker():
                             print(f"[COOLDOWN] Skipping {direction} trade — waiting cooldown.")
                             continue
 
+                    # задержка между подтверждением кластера и запуском автотрейда
+                    cluster_confirm_time = last_cluster_sent.get(direction, 0)
+                    if now - cluster_confirm_time < CLUSTER_TRADE_DELAY_SEC:
+                        print(f"[DELAY] Waiting {int(CLUSTER_TRADE_DELAY_SEC/60)} min after cluster confirmation before auto-trade.")
+                        continue
+
                         last_cluster_trade[direction] = now
 
                         if SYMBOL_WHITELIST and ticker not in SYMBOL_WHITELIST:
@@ -1012,6 +1019,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
