@@ -489,10 +489,28 @@ def webhook():
     stop       = payload.get("stop")
     target     = payload.get("target")
 
-    # 1) боевой сигнал с message
+   # 1) боевой сигнал с message
     if msg:
-        send_telegram(msg)
-        print(f"📨 Forwarded MTF alert: {ticker} {direction}")
+        # === фильтрация старых уведомлений ===
+        MAX_SIGNAL_AGE_SEC = 600  # 10 минут
+        signal_time = None
+    
+        # TradingView может прислать время в payload
+        if "time" in payload:
+            try:
+                signal_time = float(payload["time"])
+            except Exception:
+                pass
+    
+        if not signal_time:
+            signal_time = time.time()
+    
+        age = time.time() - signal_time
+        if age > MAX_SIGNAL_AGE_SEC:
+            print(f"⏳ Old signal ({int(age)}s) — skip Telegram alert")
+        else:
+            send_telegram(msg)
+            print(f"📨 Forwarded MTF alert: {ticker} {direction}")
 
         # === ДОБАВЛЯЕМ СИГНАЛ В ОЧЕРЕДЬ ===
         if ticker and direction in ("UP", "DOWN") and tf == VALID_TF:
@@ -516,6 +534,26 @@ def webhook():
                 if not all([entry, stop, target]):
                     print("ℹ️ Нет entry/stop/target — пропуск автоторговли")
                     return jsonify({"status": "skipped"}), 200
+
+                # === ограничение по возрасту сигнала ===
+                MAX_MTF_SIGNAL_AGE_SEC = 3600  # 60 минут
+                signal_time = None
+
+                # если Pine отправляет время — парсим
+                if "time" in payload:
+                    try:
+                        signal_time = float(payload["time"])
+                    except Exception:
+                        pass
+
+                # если нет — считаем текущее время сигналом
+                if not signal_time:
+                    signal_time = time.time()
+
+                age = time.time() - signal_time
+                if age > MAX_MTF_SIGNAL_AGE_SEC:
+                    print(f"⏳ MTF signal too old ({int(age)}s) — skipping trade")
+                    return jsonify({"status": "ignored", "reason": "mtf_too_old"}), 200
 
                 # определяем сторону
                 side = "Sell" if direction == "UP" else "Buy"
@@ -1008,6 +1046,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
