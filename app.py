@@ -31,7 +31,7 @@ BYBIT_API_KEY    = os.getenv("BYBIT_API_KEY", "")
 BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET", "")
 BYBIT_BASE_URL   = os.getenv("BYBIT_BASE_URL", "https://api.bybit.com")
 TRADE_ENABLED    = os.getenv("TRADE_ENABLED", "false").lower() == "true"
-MAX_RISK_USDT    = float(os.getenv("MAX_RISK_USDT", "50"))
+MAX_RISK_USDT    = float(os.getenv("MAX_RISK_USDT", "1"))
 LEVERAGE         = float(os.getenv("LEVERAGE", "20"))
 
 # если хочешь ограничить автоторговлю на конкретные тикеры:
@@ -333,52 +333,57 @@ def place_order_market_with_tp_sl(symbol: str, side: str, qty: float, tp: float,
 
 def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_price: float, sl_price: float):
     """
-    Открывает рыночную позицию и выставляет лимитные TP/SL ордера (reduceOnly=True).
+    Открывает рыночную позицию и ставит отдельные лимитные ордера для TP и SL.
+    Все ордера оформлены корректно для Bybit linear.
     """
     try:
-        # 1. Открываем позицию
+        # === 1. Открываем позицию (рыночный вход)
         resp_open = bybit_post("/v5/order/create", {
             "category": "linear",
             "symbol": symbol,
-            "side": side,
+            "side": side,  # "Buy" или "Sell"
             "orderType": "Market",
             "qty": str(qty),
-            "timeInForce": "GoodTillCancel"
+            "timeInForce": "ImmediateOrCancel"  # для Market корректно IOC
         })
         print("✅ Market entry:", resp_open)
 
-        # 2. Определяем обратную сторону для закрытия
-        close_side = "Sell" if side == "Buy" else "Buy"
+        # === 2. Вычисляем сторону для TP и SL (она должна быть противоположна входу)
+        opposite_side = "Buy" if side == "Sell" else "Sell"
 
-        # 3. Лимитный Take Profit
+        # === 3. Лимитный Take Profit
         tp_payload = {
             "category": "linear",
             "symbol": symbol,
-            "side": close_side,
+            "side": opposite_side,
             "orderType": "Limit",
             "qty": str(qty),
             "price": str(tp_price),
             "reduceOnly": True,
-            "timeInForce": "GoodTillCancel"
+            "timeInForce": "GoodTillCancel"  # обязательно
         }
         resp_tp = bybit_post("/v5/order/create", tp_payload)
         print("✅ TP limit order:", resp_tp)
 
-        # 4. Лимитный Stop Loss
+        # === 4. Лимитный Stop Loss
         sl_payload = {
             "category": "linear",
             "symbol": symbol,
-            "side": close_side,
+            "side": opposite_side,
             "orderType": "Limit",
             "qty": str(qty),
             "price": str(sl_price),
             "reduceOnly": True,
-            "timeInForce": "GoodTillCancel"
+            "timeInForce": "GoodTillCancel"  # обязательно
         }
         resp_sl = bybit_post("/v5/order/create", sl_payload)
         print("✅ SL limit order:", resp_sl)
 
-        return {"entry": resp_open, "tp": resp_tp, "sl": resp_sl}
+        return {
+            "entry": resp_open,
+            "tp": resp_tp,
+            "sl": resp_sl
+        }
 
     except Exception as e:
         print("❌ place_order_market_with_limit_tp_sl error:", e)
@@ -497,29 +502,54 @@ def webhook():
 
             log_signal(ticker, direction, tf, "WEBHOOK", entry, stop, target)
 
-        # автоторговля по MTF
+        # === автоторговля по MTF ===
         if TRADE_ENABLED and typ == "MTF":
             try:
-                if not (ticker and direction in ("UP","DOWN")):
+                if not (ticker and direction in ("UP", "DOWN")):
                     print("⛔ Нет symbol/direction — пропуск торговли")
-                elif SYMBOL_WHITELIST and ticker not in SYMBOL_WHITELIST:
-                    print(f"⛔ {ticker} не в белом списке — пропуск")
-                elif entry and stop and target:
-                    side = "Sell" if direction == "UP" else "Buy"
-                    set_leverage(ticker, LEVERAGE)
-                    qty = calc_qty_from_risk(float(entry), float(stop), MAX_RISK_USDT, ticker)
-                    if qty > 0:
-                        place_order_market_with_limit_tp_sl(ticker, side, qty, float(target), float(stop))
-                        send_telegram(
-                            f"🚀 *AUTO-TRADE*\n"
-                            f"{ticker} {side}\n"
-                            f"Qty: {qty}\n"
-                            f"Entry~{entry}\nTP: {target}\nSL: {stop}"
-                        )
-                else:
+                    return jsonify({"status": "skipped"}), 200
+
+                if SYMBOL_WHITELIST and ticker not in SYMBOL_WHITELIST:
+                    print(f"⛔ {ticker} не в белом списке — пропуск торговли")
+                    return jsonify({"status": "skipped"}), 200
+
+                if not all([entry, stop, target]):
                     print("ℹ️ Нет entry/stop/target — пропуск автоторговли")
+                    return jsonify({"status": "skipped"}), 200
+
+                # определяем сторону
+                side = "Sell" if direction == "UP" else "Buy"
+
+                # плечо
+                set_leverage(ticker, LEVERAGE)
+
+                # расчет количества
+                qty = calc_qty_from_risk(float(entry), float(stop), MAX_RISK_USDT, ticker)
+                if qty <= 0:
+                    print("⚠️ Qty <= 0 — торговля пропущена")
+                    return jsonify({"status": "skipped"}), 200
+
+                # === рыночный вход + лимитные TP/SL ===
+                resp = place_order_market_with_limit_tp_sl(
+                    ticker,
+                    side,
+                    qty,
+                    float(target),
+                    float(stop)
+                )
+
+                print("✅ AUTO-TRADE (MTF) result:", resp)
+                send_telegram(
+                    f"🚀 *AUTO-TRADE (MTF)*\n"
+                    f"{ticker} {side}\n"
+                    f"Qty: {qty}\n"
+                    f"Entry~{entry}\n"
+                    f"TP: {target}\n"
+                    f"SL: {stop}"
+                )
+
             except Exception as e:
-                print("Trade error:", e)
+                print("❌ Trade error (MTF):", e)
 
         return jsonify({"status": "forwarded"}), 200
 
@@ -978,6 +1008,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
