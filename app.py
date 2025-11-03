@@ -74,7 +74,8 @@ def _bybit_sign(payload: dict, method: str = "POST", query_string: str = ""):
 LOG_FILE = "/tmp/signals_log.csv"
 
 # =============== 🧠 ГЛОБАЛЬНЫЕ СТРУКТУРЫ СОСТОЯНИЯ ===============
-signals = deque(maxlen=5000)  # (timestamp, ticker, direction, tf)
+signals_15m = deque(maxlen=5000)
+signals_1h = deque(maxlen=2000)
 lock = threading.Lock()
 state_lock = threading.Lock()
 log_lock = threading.Lock()
@@ -510,11 +511,15 @@ def webhook():
             send_telegram(msg)
             print(f"📨 Forwarded MTF alert: {ticker} {direction}")
 
-        # === ДОБАВЛЯЕМ СИГНАЛ В ОЧЕРЕДЬ ===
-        if ticker and direction in ("UP", "DOWN") and tf in (VALID_TF_15M, VALID_TF_1H):
+        # === ДОБАВЛЯЕМ СИГНАЛ В НУЖНУЮ ОЧЕРЕДЬ ===
+        if ticker and direction in ("UP", "DOWN"):
             with lock:
-                signals.append((time.time(), ticker, direction, tf))
-                print(f"[WH] queued {ticker} {direction} ({tf}) for cluster window")
+                if tf == VALID_TF_15M:
+                    signals_15m.append((time.time(), ticker, direction, tf))
+                    print(f"[WH] queued {ticker} {direction} ({tf}) for 15m cluster window")
+                elif tf == VALID_TF_1H:
+                    signals_1h.append((time.time(), ticker, direction, tf))
+                    print(f"[WH] queued {ticker} {direction} ({tf}) for 1h cluster window")
 
             log_signal(ticker, direction, tf, "WEBHOOK", entry, stop, target)
 
@@ -568,19 +573,23 @@ def webhook():
     if typ in ("MTF", "CLUSTER", "IMPULSE") and tf in (VALID_TF_15M, VALID_TF_1H):
         if ticker and direction in ("UP", "DOWN"):
             with lock:
-                signals.append((time.time(), ticker, direction, tf))
-                print(f"[WH] queued {ticker} {direction} ({tf}) for cluster window")
+                if tf == VALID_TF_15M:
+                    signals_15m.append((time.time(), ticker, direction, tf))
+                    print(f"[WH] queued {ticker} {direction} ({tf}) for 15m cluster window")
+                elif tf == VALID_TF_1H:
+                    signals_1h.append((time.time(), ticker, direction, tf))
+                    print(f"[WH] queued {ticker} {direction} ({tf}) for 1h cluster window")
 
             log_signal(ticker, direction, tf, typ or "CLUSTER", entry, stop, target)
             return jsonify({"status": "ok"}), 200
 
     return jsonify({"status": "ignored"}), 200
 
-# =============== 🧠 КЛАСТЕР-ВОРКЕР ===============
+# =============== 🧠 КЛАСТЕР-ВОРКЕР (15m) ===============
 last_cluster_trade = {"UP": 0, "DOWN": 0}
 
-def cluster_worker():
-    print("⚙️ cluster_worker started")
+def cluster_worker_15m():
+    print("⚙️ cluster_worker_15m started")
     while True:
         try:
             time.sleep(1)
@@ -589,9 +598,9 @@ def cluster_worker():
 
             # --- снапшот очереди + чистка старья
             with lock:
-                while signals and signals[0][0] < cutoff:
-                    signals.popleft()
-                snapshot = list(signals)
+                while signals_15m and signals_15m[0][0] < cutoff:
+                    signals_15m.popleft()
+                snapshot = list(signals_15m)
 
             sig_count = len(snapshot)
             if sig_count == 0:
@@ -602,10 +611,10 @@ def cluster_worker():
             try:
                 tickers_dbg = [s[1] for s in snapshot]
                 dirs_dbg = [s[2] for s in snapshot]
-                print(f"[DEBUG] signals len={sig_count}")
-                print(f"[DEBUG] Tickers: {tickers_dbg}")
-                print(f"[DEBUG] Directions: {dirs_dbg}")
-                print(f"[DEBUG] cutoff={cutoff}, first={snapshot[0][0]}, last={snapshot[-1][0]}")
+                print(f"[DEBUG][15m] signals len={sig_count}")
+                print(f"[DEBUG][15m] Tickers: {tickers_dbg}")
+                print(f"[DEBUG][15m] Directions: {dirs_dbg}")
+                print(f"[DEBUG][15m] cutoff={cutoff}, first={snapshot[0][0]}, last={snapshot[-1][0]}")
             except Exception:
                 pass
 
@@ -618,13 +627,13 @@ def cluster_worker():
                 elif d == "DOWN":
                     downs.add(t)
 
-            print(f"[DEBUG] total={sig_count}, ups={len(ups)}, downs={len(downs)}")
+            print(f"[DEBUG][15m] total={sig_count}, ups={len(ups)}, downs={len(downs)}")
 
-            # --- уведомления о кластерах (с cooldown, но без состава)
+            # --- уведомления о кластерах (15m)
             if len(ups) >= CLUSTER_THRESHOLD:
                 if now - last_cluster_sent["UP"] > CLUSTER_WINDOW_MIN * 60:
                     send_telegram(
-                        f"🟢 *CLUSTER UP* — {len(ups)} из {len(tickers_seen)} монет "
+                        f"🟢 *CLUSTER UP (15m)* — {len(ups)} из {len(tickers_seen)} монет "
                         f"(TF {VALID_TF_15M}, {CLUSTER_WINDOW_MIN} мин)\n"
                         f"📈 {', '.join(sorted(list(ups)))}"
                     )
@@ -632,11 +641,11 @@ def cluster_worker():
                     last_cluster_sent["UP"] = now
                 else:
                     print("[COOLDOWN] skip UP cluster notify")
-            
+
             if len(downs) >= CLUSTER_THRESHOLD:
                 if now - last_cluster_sent["DOWN"] > CLUSTER_WINDOW_MIN * 60:
                     send_telegram(
-                        f"🔴 *CLUSTER DOWN* — {len(downs)} из {len(tickers_seen)} монет "
+                        f"🔴 *CLUSTER DOWN (15m)* — {len(downs)} из {len(tickers_seen)} монет "
                         f"(TF {VALID_TF_15M}, {CLUSTER_WINDOW_MIN} мин)\n"
                         f"📉 {', '.join(sorted(list(downs)))}"
                     )
@@ -645,79 +654,78 @@ def cluster_worker():
                 else:
                     print("[COOLDOWN] skip DOWN cluster notify")
 
-            # --- автоторговля по кластерам (только кулдаун по времени)
+            # --- автоторговля по кластерам (15m)
             if TRADE_ENABLED:
                 try:
                     direction, ticker = None, None
-            
+
                     if len(ups) >= CLUSTER_THRESHOLD and ups:
                         direction, ticker = "UP", list(ups)[0]
                     elif len(downs) >= CLUSTER_THRESHOLD and downs:
                         direction, ticker = "DOWN", list(downs)[0]
-            
+
                     if not direction:
                         continue
-            
-                    # Проверка кулдауна
+
+                    # кулдаун
                     if now - last_cluster_trade[direction] < CLUSTER_COOLDOWN_SEC:
                         print(f"[COOLDOWN] Skipping {direction} trade — waiting cooldown.")
                         continue
-            
-                    # Проверка задержки после кластера
+
+                    # задержка после подтверждения
                     cluster_confirm_time = last_cluster_sent.get(direction, 0)
                     if now - cluster_confirm_time < CLUSTER_TRADE_DELAY_SEC:
                         print(f"[DELAY] Waiting {int(CLUSTER_TRADE_DELAY_SEC/60)} min after cluster confirmation before auto-trade.")
                         continue
-            
-                    # >>> сюда переносим фиксацию времени последней сделки
+
                     last_cluster_trade[direction] = now
-            
-                    # Белый список
+
+                    # белый список
                     if SYMBOL_WHITELIST and ticker not in SYMBOL_WHITELIST:
                         print(f"⛔ {ticker} вне белого списка — пропуск")
                         continue
-            
-                    # Получаем цену входа
+
+                    # цена входа
                     resp = requests.get(
                         f"{BYBIT_BASE_URL}/v5/market/tickers",
                         params={"category": "linear", "symbol": ticker},
                         timeout=5
                     ).json()
                     entry_price = float(resp["result"]["list"][0]["lastPrice"])
-            
-                    # ATR / волатильность
+
                     atr_val = get_atr(ticker, period=14, interval="15")
                     atr_base = get_atr(ticker, period=100, interval="15")
                     vol_scale = max(0.7, min(atr_val / max(atr_base, 0.0001), 1.3))
-            
+
                     rr_stop   = atr_val * 0.8 * vol_scale
                     rr_target = atr_val * 3.0 * vol_scale
-            
+
                     stop_price   = entry_price + rr_stop   if direction == "UP" else entry_price - rr_stop
                     target_price = entry_price - rr_target if direction == "UP" else entry_price + rr_target
                     side = "Sell" if direction == "UP" else "Buy"
-            
+
                     set_leverage(ticker, LEVERAGE)
                     qty = calc_qty_from_risk(entry_price, stop_price, MAX_RISK_USDT, ticker)
                     if qty <= 0:
                         raise ValueError("Qty <= 0 after normalization")
-            
+
                     place_order_market_with_limit_tp_sl(ticker, side, qty, target_price, stop_price)
                     print(f"💥 Cluster auto-trade {ticker} {side} -> TP:{target_price}, SL:{stop_price}")
                     send_telegram(
-                        f"⚡ *CLUSTER AUTO-TRADE*\n"
+                        f"⚡ *CLUSTER AUTO-TRADE (15m)*\n"
                         f"{ticker} {side}\n"
                         f"Qty: {qty}\n"
                         f"Entry~{entry_price}\nTP: {target_price}\nSL: {stop_price}"
                     )
+
                 except Exception as e:
-                    print("❌ Cluster auto-trade error:", e)
-                    
+                    print("❌ Cluster auto-trade error (15m):", e)
+
             time.sleep(CHECK_INTERVAL_SEC)
-            
+
         except Exception as e:
-            print("💀 cluster_worker crashed, restarting in 10s:", e)
-            time.sleep(10)    
+            print("💀 cluster_worker_15m crashed, restarting in 10s:", e)
+            time.sleep(10)
 
 # =============== 🧠 КЛАСТЕР-ВОРКЕР (1H уведомления, без торговли, с настройками из .env) ===============
 def cluster_worker_1h():
@@ -733,7 +741,9 @@ def cluster_worker_1h():
 
             # --- берём только сигналы 1h
             with lock:
-                snapshot = [s for s in signals if s[3] == VALID_TF_1H and s[0] > cutoff]
+                while signals_1h and signals_1h[0][0] < cutoff:
+                    signals_1h.popleft()
+                snapshot = list(signals_1h)
 
             if not snapshot:
                 time.sleep(CHECK_INTERVAL_SEC * 2)
@@ -1076,7 +1086,7 @@ if __name__ == "__main__":
     print("🚀 Starting Flask app in single-process mode")
 
     # Запуск фоновых потоков (в одном процессе)
-    threading.Thread(target=cluster_worker, daemon=True).start()
+    threading.Thread(target=cluster_worker_15m, daemon=True).start()
     threading.Thread(target=cluster_worker_1h, daemon=True).start()
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     threading.Thread(target=backup_log_worker, daemon=True).start()
@@ -1086,6 +1096,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
