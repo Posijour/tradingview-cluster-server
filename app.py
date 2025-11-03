@@ -641,26 +641,26 @@ def cluster_worker_15m():
 
             # --- уведомления о кластерах (15m)
             if len(ups) >= CLUSTER_THRESHOLD:
-                if now - last_cluster_sent_15["UP"] > CLUSTER_WINDOW_MIN * 60:
+                if now - last_cluster_sent_15m["UP"] > CLUSTER_WINDOW_MIN * 60:
                     send_telegram(
                         f"🟢 *CLUSTER UP (15m)* — {len(ups)} из {len(tickers_seen)} монет "
                         f"(TF {VALID_TF_15M}, {CLUSTER_WINDOW_MIN} мин)\n"
                         f"📈 {', '.join(sorted(list(ups)))}"
                     )
                     log_signal(",".join(sorted(list(ups))), "UP", VALID_TF_15M, "CLUSTER")
-                    last_cluster_sent_15["UP"] = now
+                    last_cluster_sent_15m["UP"] = now
                 else:
                     print("[COOLDOWN] skip UP cluster notify")
 
             if len(downs) >= CLUSTER_THRESHOLD:
-                if now - last_cluster_sent_15["DOWN"] > CLUSTER_WINDOW_MIN * 60:
+                if now - last_cluster_sent_15m["DOWN"] > CLUSTER_WINDOW_MIN * 60:
                     send_telegram(
                         f"🔴 *CLUSTER DOWN (15m)* — {len(downs)} из {len(tickers_seen)} монет "
                         f"(TF {VALID_TF_15M}, {CLUSTER_WINDOW_MIN} мин)\n"
                         f"📉 {', '.join(sorted(list(downs)))}"
                     )
                     log_signal(",".join(sorted(list(downs))), "DOWN", VALID_TF_15M, "CLUSTER")
-                    last_cluster_sent_15["DOWN"] = now
+                    last_cluster_sent_15m["DOWN"] = now
                 else:
                     print("[COOLDOWN] skip DOWN cluster notify")
 
@@ -1116,6 +1116,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
