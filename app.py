@@ -101,12 +101,14 @@ def verify_signature(secret, body, signature):
     return hmac.compare_digest(mac, signature)
 
 # =============== 📩 Telegram отправка с антифлудом ===============
-# =============== 📩 Telegram ===============
-def send_telegram(text: str):
+tg_times = deque(maxlen=20)
+tg_times_1h = deque(maxlen=20)  # отдельный буфер для 1H уведомлений
+
+def send_telegram(text: str, channel: str = "default"):
     """
-    Отправляет сообщение в Telegram в ФОНОВОМ потоке.
-    Весь антифлуд (не чаще 1/сек, не более 20/мин) внутри потока,
-    чтобы HTTP-обработчик не ждал sleep().
+    Отправляет сообщение в Telegram с раздельным антифлудом:
+    - 'default' — обычные уведомления, MTF, 15m кластеры и т.п.
+    - '1h' — часовые кластеры, не блокируются другими потоками.
     """
     if not TELEGRAM_TOKEN or not CHAT_ID:
         print("⚠️ Telegram credentials missing.")
@@ -116,25 +118,28 @@ def send_telegram(text: str):
 
     def _send_with_rate_limit():
         try:
+            # выбираем буфер по каналу
+            tg_queue = tg_times_1h if channel == "1h" else tg_times
+
             now = monotonic()
-            tg_times.append(now)
+            tg_queue.append(now)
 
-            # не чаще 1 сообщения/сек
-            if len(tg_times) >= 2 and now - tg_times[-2] < 1.0:
-                time.sleep(1.0 - (now - tg_times[-2]))
+            # не чаще 1 сообщения/сек для данного канала
+            if len(tg_queue) >= 2 and now - tg_queue[-2] < 1.0:
+                time.sleep(1.0 - (now - tg_queue[-2]))
 
-            # и не более 20 за минуту
-            if len(tg_times) == tg_times.maxlen and now - tg_times[0] < 60:
-                time.sleep(60 - (now - tg_times[0]))
+            # и не более 20 сообщений за минуту в этом канале
+            if len(tg_queue) == tg_queue.maxlen and now - tg_queue[0] < 60:
+                time.sleep(60 - (now - tg_queue[0]))
 
             requests.get(
                 f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
                 params={"chat_id": CHAT_ID, "text": safe_text, "parse_mode": "MarkdownV2"},
                 timeout=8,
             )
-            print("✅ Sent to Telegram")
+            print(f"✅ Sent to Telegram ({channel})")
         except Exception as e:
-            print("❌ Telegram error:", e)
+            print(f"❌ Telegram error ({channel}):", e)
 
     threading.Thread(target=_send_with_rate_limit, daemon=True).start()
 
@@ -766,14 +771,15 @@ def cluster_worker_1h():
                     send_telegram(
                         f"🟢 *CLUSTER 1H UP* — {len(ups)} из {len(tickers_seen)} монет "
                         f"(TF 1H, окно {CLUSTER_WINDOW_H1_MIN} мин)\n"
-                        f"📈 {', '.join(sorted(list(ups)))}"
+                        f"📈 {', '.join(sorted(list(ups)))}",
+                        channel="1h"
                     )
                     log_signal(",".join(sorted(list(ups))), "UP", VALID_TF_1H, "CLUSTER_1H")
                     last_cluster_sent_1h["UP"] = now
                     last_cluster_composition["UP"] = set(ups)
                 else:
                     print("[1H COOL] skip UP cluster notify")
-
+            
             # === 🔴 DOWN ===
             if len(downs) >= CLUSTER_THRESHOLD:
                 same_composition = downs == last_cluster_composition["DOWN"]
@@ -781,15 +787,14 @@ def cluster_worker_1h():
                     send_telegram(
                         f"🔴 *CLUSTER 1H DOWN* — {len(downs)} из {len(tickers_seen)} монет "
                         f"(TF 1H, окно {CLUSTER_WINDOW_H1_MIN} мин)\n"
-                        f"📉 {', '.join(sorted(list(downs)))}"
+                        f"📉 {', '.join(sorted(list(downs)))}",
+                        channel="1h"
                     )
                     log_signal(",".join(sorted(list(downs))), "DOWN", VALID_TF_1H, "CLUSTER_1H")
                     last_cluster_sent_1h["DOWN"] = now
                     last_cluster_composition["DOWN"] = set(downs)
                 else:
                     print("[1H COOL] skip DOWN cluster notify")
-
-            time.sleep(CHECK_INTERVAL_SEC * 2)
 
         except Exception as e:
             print("💀 cluster_worker_1h crashed, restarting in 10s:", e)
@@ -1102,6 +1107,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
