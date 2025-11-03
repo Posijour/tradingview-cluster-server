@@ -656,69 +656,70 @@ def cluster_worker():
             if TRADE_ENABLED:
                 try:
                     direction, ticker = None, None
-
+            
                     if len(ups) >= CLUSTER_THRESHOLD and ups:
                         direction, ticker = "UP", list(ups)[0]
                     elif len(downs) >= CLUSTER_THRESHOLD and downs:
                         direction, ticker = "DOWN", list(downs)[0]
-
-                    if ticker and direction:
-                        if now - last_cluster_trade[direction] < CLUSTER_COOLDOWN_SEC:
-                            print(f"[COOLDOWN] Skipping {direction} trade — waiting cooldown.")
-                            continue
-
-                    # задержка между подтверждением кластера и запуском автотрейда
+            
+                    if not direction:
+                        continue
+            
+                    # Проверка кулдауна
+                    if now - last_cluster_trade[direction] < CLUSTER_COOLDOWN_SEC:
+                        print(f"[COOLDOWN] Skipping {direction} trade — waiting cooldown.")
+                        continue
+            
+                    # Проверка задержки после кластера
                     cluster_confirm_time = last_cluster_sent.get(direction, 0)
                     if now - cluster_confirm_time < CLUSTER_TRADE_DELAY_SEC:
                         print(f"[DELAY] Waiting {int(CLUSTER_TRADE_DELAY_SEC/60)} min after cluster confirmation before auto-trade.")
                         continue
-
-                        last_cluster_trade[direction] = now
-
-                        if SYMBOL_WHITELIST and ticker not in SYMBOL_WHITELIST:
-                            print(f"⛔ {ticker} вне белого списка — пропуск")
-                            continue
-
-                        resp = requests.get(
-                            f"{BYBIT_BASE_URL}/v5/market/tickers",
-                            params={"category": "linear", "symbol": ticker},
-                            timeout=5
-                        ).json()
-                        entry_price = float(resp["result"]["list"][0]["lastPrice"])
-
-                        atr_val = get_atr(ticker, period=14, interval="15")
-                        atr_base = get_atr(ticker, period=100, interval="15")
-                        vol_scale = max(0.7, min(atr_val / max(atr_base, 0.0001), 1.3))
-
-                        rr_stop   = atr_val * 0.8 * vol_scale
-                        rr_target = atr_val * 3.0 * vol_scale
-
-                        stop_price   = entry_price + rr_stop   if direction == "UP" else entry_price - rr_stop
-                        target_price = entry_price - rr_target if direction == "UP" else entry_price + rr_target
-                        side = "Sell" if direction == "UP" else "Buy"
-
-                        set_leverage(ticker, LEVERAGE)
-                        qty = calc_qty_from_risk(entry_price, stop_price, MAX_RISK_USDT, ticker)
-                        if qty <= 0:
-                            raise ValueError("Qty <= 0 after normalization")
-
-                        place_order_market_with_limit_tp_sl(ticker, side, qty, target_price, stop_price)
-                        print(f"💥 Cluster auto-trade {ticker} {side} -> TP:{target_price}, SL:{stop_price}")
-                        send_telegram(
-                            f"⚡ *CLUSTER AUTO-TRADE*\n"
-                            f"{ticker} {side}\n"
-                            f"Qty: {qty}\n"
-                            f"Entry~{entry_price}\nTP: {target_price}\nSL: {stop_price}"
-                        )
+            
+                    # >>> сюда переносим фиксацию времени последней сделки
+                    last_cluster_trade[direction] = now
+            
+                    # Белый список
+                    if SYMBOL_WHITELIST and ticker not in SYMBOL_WHITELIST:
+                        print(f"⛔ {ticker} вне белого списка — пропуск")
+                        continue
+            
+                    # Получаем цену входа
+                    resp = requests.get(
+                        f"{BYBIT_BASE_URL}/v5/market/tickers",
+                        params={"category": "linear", "symbol": ticker},
+                        timeout=5
+                    ).json()
+                    entry_price = float(resp["result"]["list"][0]["lastPrice"])
+            
+                    # ATR / волатильность
+                    atr_val = get_atr(ticker, period=14, interval="15")
+                    atr_base = get_atr(ticker, period=100, interval="15")
+                    vol_scale = max(0.7, min(atr_val / max(atr_base, 0.0001), 1.3))
+            
+                    rr_stop   = atr_val * 0.8 * vol_scale
+                    rr_target = atr_val * 3.0 * vol_scale
+            
+                    stop_price   = entry_price + rr_stop   if direction == "UP" else entry_price - rr_stop
+                    target_price = entry_price - rr_target if direction == "UP" else entry_price + rr_target
+                    side = "Sell" if direction == "UP" else "Buy"
+            
+                    set_leverage(ticker, LEVERAGE)
+                    qty = calc_qty_from_risk(entry_price, stop_price, MAX_RISK_USDT, ticker)
+                    if qty <= 0:
+                        raise ValueError("Qty <= 0 after normalization")
+            
+                    place_order_market_with_limit_tp_sl(ticker, side, qty, target_price, stop_price)
+                    print(f"💥 Cluster auto-trade {ticker} {side} -> TP:{target_price}, SL:{stop_price}")
+                    send_telegram(
+                        f"⚡ *CLUSTER AUTO-TRADE*\n"
+                        f"{ticker} {side}\n"
+                        f"Qty: {qty}\n"
+                        f"Entry~{entry_price}\nTP: {target_price}\nSL: {stop_price}"
+                    )
                 except Exception as e:
                     print("❌ Cluster auto-trade error:", e)
-
-            time.sleep(CHECK_INTERVAL_SEC)
-
-        except Exception as e:
-            print("💀 cluster_worker crashed, restarting in 10s:", e)
-            time.sleep(10)
-            
+                    
 # =============== ВОРКЕР БЕКАПА ===============
 def backup_log_worker():
     """
@@ -1019,27 +1020,3 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
