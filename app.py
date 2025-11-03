@@ -20,11 +20,13 @@ BACKUP_ONLY_IF_GROWS = os.getenv("BACKUP_ONLY_IF_GROWS", "true").lower() == "tru
 
 # Кластеры
 CLUSTER_WINDOW_MIN     = int(os.getenv("CLUSTER_WINDOW_MIN", "45"))     # окно кластеров в минутах
+CLUSTER_WINDOW_H1_MIN     = int(os.getenv("CLUSTER_WINDOW_H1_MIN", "90"))
 CLUSTER_THRESHOLD      = int(os.getenv("CLUSTER_THRESHOLD", "6"))       # сколько разных монет в одну сторону, чтобы это считалось кластером
 CHECK_INTERVAL_SEC     = int(os.getenv("CHECK_INTERVAL_SEC", "10"))     # как часто воркер проверяет
 VALID_TF               = os.getenv("VALID_TF", "15m")                   # какой tf мы вообще учитываем
 WEBHOOK_SECRET         = os.getenv("WEBHOOK_SECRET", "")                # защита /webhook?key=...
 CLUSTER_COOLDOWN_SEC = CLUSTER_WINDOW_MIN * 60
+CLUSTER_H1_COOLDOWN_SEC   = int(os.getenv("CLUSTER_H1_COOLDOWN_SEC", "3600"))
 CLUSTER_TRADE_DELAY_SEC = int(os.getenv("CLUSTER_TRADE_DELAY_SEC", "600"))  # 10 минут
 
 # Bybit
@@ -723,7 +725,73 @@ def cluster_worker():
         except Exception as e:
             print("💀 cluster_worker crashed, restarting in 10s:", e)
             time.sleep(10)    
-            
+
+# =============== 🧠 КЛАСТЕР-ВОРКЕР (1H уведомления, без торговли, с настройками из .env) ===============
+def cluster_worker_1h():
+    print("⚙️ cluster_worker_1h started")
+    last_cluster_sent_1h = {"UP": 0, "DOWN": 0}
+    last_cluster_composition = {"UP": set(), "DOWN": set()}
+
+    while True:
+        try:
+            time.sleep(1)
+            now = time.time()
+            cutoff = now - CLUSTER_WINDOW_H1_MIN * 60
+
+            # --- берём только сигналы 1h
+            with lock:
+                snapshot = [s for s in signals if s[3] == VALID_TF_1H and s[0] > cutoff]
+
+            if not snapshot:
+                time.sleep(CHECK_INTERVAL_SEC * 2)
+                continue
+
+            ups, downs, tickers_seen = set(), set(), set()
+            for (_, t, d, _) in snapshot:
+                tickers_seen.add(t)
+                if d == "UP":
+                    ups.add(t)
+                elif d == "DOWN":
+                    downs.add(t)
+
+            print(f"[1H DEBUG] signals={len(snapshot)}, ups={len(ups)}, downs={len(downs)}")
+
+            # === 🟢 UP ===
+            if len(ups) >= CLUSTER_THRESHOLD:
+                same_composition = ups == last_cluster_composition["UP"]
+                if (now - last_cluster_sent_1h["UP"] > CLUSTER_H1_COOLDOWN_SEC) and not same_composition:
+                    send_telegram(
+                        f"🟢 *CLUSTER 1H UP* — {len(ups)} из {len(tickers_seen)} монет "
+                        f"(TF 1H, окно {CLUSTER_WINDOW_H1_MIN} мин)\n"
+                        f"📈 {', '.join(sorted(list(ups)))}"
+                    )
+                    log_signal(",".join(sorted(list(ups))), "UP", VALID_TF_1H, "CLUSTER_1H")
+                    last_cluster_sent_1h["UP"] = now
+                    last_cluster_composition["UP"] = set(ups)
+                else:
+                    print("[1H COOL] skip UP cluster notify")
+
+            # === 🔴 DOWN ===
+            if len(downs) >= CLUSTER_THRESHOLD:
+                same_composition = downs == last_cluster_composition["DOWN"]
+                if (now - last_cluster_sent_1h["DOWN"] > CLUSTER_H1_COOLDOWN_SEC) and not same_composition:
+                    send_telegram(
+                        f"🔴 *CLUSTER 1H DOWN* — {len(downs)} из {len(tickers_seen)} монет "
+                        f"(TF 1H, окно {CLUSTER_WINDOW_H1_MIN} мин)\n"
+                        f"📉 {', '.join(sorted(list(downs)))}"
+                    )
+                    log_signal(",".join(sorted(list(downs))), "DOWN", VALID_TF_1H, "CLUSTER_1H")
+                    last_cluster_sent_1h["DOWN"] = now
+                    last_cluster_composition["DOWN"] = set(downs)
+                else:
+                    print("[1H COOL] skip DOWN cluster notify")
+
+            time.sleep(CHECK_INTERVAL_SEC * 2)
+
+        except Exception as e:
+            print("💀 cluster_worker_1h crashed, restarting in 10s:", e)
+            time.sleep(10)
+
 # =============== ВОРКЕР БЕКАПА ===============
 def backup_log_worker():
     """
@@ -1016,6 +1084,7 @@ if __name__ == "__main__":
 
     # Запуск фоновых потоков (в одном процессе)
     threading.Thread(target=cluster_worker, daemon=True).start()
+    threading.Thread(target=cluster_worker_1h, daemon=True).start()
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     threading.Thread(target=backup_log_worker, daemon=True).start()
 
@@ -1024,5 +1093,6 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
