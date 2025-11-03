@@ -358,7 +358,7 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
         # === 2. Противоположная сторона
         opposite_side = "Buy" if side == "Sell" else "Sell"
 
-        # === 3. Take Profit (conditional limit)
+        # === 3. Take Profit (лимит)
         tp_payload = {
             "category": "linear",
             "symbol": symbol,
@@ -366,31 +366,26 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
             "orderType": "Limit",
             "qty": str(qty),
             "price": str(tp_price),
-            "triggerBy": "LastPrice",
-            "triggerPrice": str(tp_price),
             "reduceOnly": True,
-            "closeOnTrigger": True,
             "timeInForce": "GoodTillCancel"
         }
         resp_tp = bybit_post("/v5/order/create", tp_payload)
-        print("✅ TP conditional limit order:", resp_tp)
-
-        # === 4. Stop Loss (conditional limit)
+        print("✅ TP limit order:", resp_tp)
+        
+        # === 4. Stop Loss (стоп с триггером)
         sl_payload = {
             "category": "linear",
             "symbol": symbol,
             "side": opposite_side,
-            "orderType": "Limit",
+            "orderType": "Stop",          # ← ключевой момент
             "qty": str(qty),
-            "price": str(sl_price),
+            "triggerPrice": str(sl_price),  # ← срабатывание по цене
             "triggerBy": "LastPrice",
-            "triggerPrice": str(sl_price),
             "reduceOnly": True,
-            "closeOnTrigger": True,
-            "timeInForce": "GoodTillCancel"
+            "timeInForce": "GoodTillCancel",
         }
         resp_sl = bybit_post("/v5/order/create", sl_payload)
-        print("✅ SL conditional limit order:", resp_sl)
+        print("✅ SL stop order:", resp_sl)
 
         return {"entry": resp_open, "tp": resp_tp, "sl": resp_sl}
 
@@ -1116,6 +1111,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
