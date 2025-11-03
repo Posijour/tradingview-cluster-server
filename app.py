@@ -679,8 +679,12 @@ def cluster_worker_15m():
 
                     # задержка после подтверждения
                     cluster_confirm_time = last_cluster_sent.get(direction, 0)
-                    if now - cluster_confirm_time < CLUSTER_TRADE_DELAY_SEC:
-                        print(f"[DELAY] Waiting {int(CLUSTER_TRADE_DELAY_SEC/60)} min after cluster confirmation before auto-trade.")
+                    elapsed = now - cluster_confirm_time
+                    if elapsed < CLUSTER_TRADE_DELAY_SEC:
+                        remaining = CLUSTER_TRADE_DELAY_SEC - elapsed
+                        mins = int(remaining // 60)
+                        secs = int(remaining % 60)
+                        print(f"[DELAY] Waiting {mins:02d}m {secs:02d}s before auto-trade ({direction}).")
                         continue
 
                     last_cluster_trade[direction] = now
@@ -1107,6 +1111,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
