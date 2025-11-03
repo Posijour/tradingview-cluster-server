@@ -339,8 +339,8 @@ def set_leverage(symbol, leverage):
 
 def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_price: float, sl_price: float):
     """
-    Открывает рыночную позицию и ставит лимитные TP и SL ордера (оба reduceOnly).
-    SL — лимитный с триггером по цене, не рыночный.
+    Открывает рыночную позицию и ставит условные лимитные TP и SL ордера (оба reduceOnly).
+    SL и TP — лимитные с триггером по цене (conditional), не рыночные.
     """
     try:
         # === 1. Открываем позицию
@@ -357,7 +357,7 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
         # === 2. Противоположная сторона
         opposite_side = "Buy" if side == "Sell" else "Sell"
 
-        # === 3. Take Profit (лимит)
+        # === 3. Take Profit (conditional limit)
         tp_payload = {
             "category": "linear",
             "symbol": symbol,
@@ -365,27 +365,31 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
             "orderType": "Limit",
             "qty": str(qty),
             "price": str(tp_price),
+            "triggerBy": "LastPrice",
+            "triggerPrice": str(tp_price),
             "reduceOnly": True,
+            "closeOnTrigger": True,
             "timeInForce": "GoodTillCancel"
         }
         resp_tp = bybit_post("/v5/order/create", tp_payload)
-        print("✅ TP limit order:", resp_tp)
+        print("✅ TP conditional limit order:", resp_tp)
 
-        # === 4. Stop Loss (лимит с триггером)
+        # === 4. Stop Loss (conditional limit)
         sl_payload = {
             "category": "linear",
             "symbol": symbol,
             "side": opposite_side,
             "orderType": "Limit",
             "qty": str(qty),
-            "price": str(sl_price),      # по этой цене он будет стоять
-            "triggerBy": "LastPrice",    # срабатывание по последней цене
-            "triggerDirection": 2 if side == "Sell" else 1,
+            "price": str(sl_price),
+            "triggerBy": "LastPrice",
+            "triggerPrice": str(sl_price),
             "reduceOnly": True,
+            "closeOnTrigger": True,
             "timeInForce": "GoodTillCancel"
         }
         resp_sl = bybit_post("/v5/order/create", sl_payload)
-        print("✅ SL limit order:", resp_sl)
+        print("✅ SL conditional limit order:", resp_sl)
 
         return {"entry": resp_open, "tp": resp_tp, "sl": resp_sl}
 
@@ -1111,6 +1115,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
