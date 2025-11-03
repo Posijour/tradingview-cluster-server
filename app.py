@@ -372,17 +372,19 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
         resp_tp = bybit_post("/v5/order/create", tp_payload)
         print("✅ TP limit order:", resp_tp)
         
-        # === 4. Stop Loss (условный маркет)
+        # === 4. Stop Loss (условный рыночный)
         sl_payload = {
             "category": "linear",
             "symbol": symbol,
             "side": opposite_side,
-            "orderType": "Market",        # ← Stop Loss срабатывает рыночным
+            "orderType": "Market",
             "qty": str(qty),
             "triggerPrice": str(sl_price),
             "triggerBy": "LastPrice",
             "reduceOnly": True,
-            "closeOnTrigger": True,       # ← обязательно, если позиция закрывается
+            "closeOnTrigger": True,
+            "positionIdx": 0,   # 0 = one-way mode
+            "triggerDirection": 1 if side == "Buy" else 2  # ← возвращаем, но корректно
         }
         resp_sl = bybit_post("/v5/order/create", sl_payload)
         print("✅ SL stop order:", resp_sl)
@@ -1111,19 +1113,3 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
