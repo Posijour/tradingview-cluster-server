@@ -683,7 +683,7 @@ def cluster_worker_15m():
                         continue
 
                     # задержка после подтверждения
-                    cluster_confirm_time = last_cluster_sent.get(direction, 0)
+                    cluster_confirm_time = last_cluster_sent_15m.get(direction, 0)
                     elapsed = now - cluster_confirm_time
                     if elapsed < CLUSTER_TRADE_DELAY_SEC:
                         remaining = CLUSTER_TRADE_DELAY_SEC - elapsed
@@ -1116,6 +1116,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
