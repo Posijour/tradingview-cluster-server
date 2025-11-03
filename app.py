@@ -23,7 +23,8 @@ CLUSTER_WINDOW_MIN     = int(os.getenv("CLUSTER_WINDOW_MIN", "45"))     # окн
 CLUSTER_WINDOW_H1_MIN     = int(os.getenv("CLUSTER_WINDOW_H1_MIN", "90"))
 CLUSTER_THRESHOLD      = int(os.getenv("CLUSTER_THRESHOLD", "6"))       # сколько разных монет в одну сторону, чтобы это считалось кластером
 CHECK_INTERVAL_SEC     = int(os.getenv("CHECK_INTERVAL_SEC", "10"))     # как часто воркер проверяет
-VALID_TF               = os.getenv("VALID_TF", "15m")                   # какой tf мы вообще учитываем
+VALID_TF_15M = os.getenv("VALID_TF_15M", "15m")
+VALID_TF_1H  = os.getenv("VALID_TF_1H", "1h")
 WEBHOOK_SECRET         = os.getenv("WEBHOOK_SECRET", "")                # защита /webhook?key=...
 CLUSTER_COOLDOWN_SEC = CLUSTER_WINDOW_MIN * 60
 CLUSTER_H1_COOLDOWN_SEC   = int(os.getenv("CLUSTER_H1_COOLDOWN_SEC", "3600"))
@@ -510,7 +511,7 @@ def webhook():
             print(f"📨 Forwarded MTF alert: {ticker} {direction}")
 
         # === ДОБАВЛЯЕМ СИГНАЛ В ОЧЕРЕДЬ ===
-        if ticker and direction in ("UP", "DOWN") and tf == VALID_TF:
+        if ticker and direction in ("UP", "DOWN") and tf in (VALID_TF_15M, VALID_TF_1H):
             with lock:
                 signals.append((time.time(), ticker, direction, tf))
                 print(f"[WH] queued {ticker} {direction} ({tf}) for cluster window")
@@ -518,7 +519,7 @@ def webhook():
             log_signal(ticker, direction, tf, "WEBHOOK", entry, stop, target)
 
         # === автоторговля по MTF ===
-        if TRADE_ENABLED and typ == "MTF":
+        if TRADE_ENABLED and typ == "MTF" and tf == VALID_TF_15M:
             try:
                 if not (ticker and direction in ("UP", "DOWN")):
                     print("⛔ Нет symbol/direction — пропуск торговли")
@@ -532,19 +533,14 @@ def webhook():
                     print("ℹ️ Нет entry/stop/target — пропуск автоторговли")
                     return jsonify({"status": "skipped"}), 200
 
-                # определяем сторону
                 side = "Sell" if direction == "UP" else "Buy"
-
-                # плечо
                 set_leverage(ticker, LEVERAGE)
 
-                # расчет количества
                 qty = calc_qty_from_risk(float(entry), float(stop), MAX_RISK_USDT, ticker)
                 if qty <= 0:
                     print("⚠️ Qty <= 0 — торговля пропущена")
                     return jsonify({"status": "skipped"}), 200
 
-                # === рыночный вход + лимитные TP/SL ===
                 resp = place_order_market_with_limit_tp_sl(
                     ticker,
                     side,
@@ -569,7 +565,7 @@ def webhook():
         return jsonify({"status": "forwarded"}), 200
 
     # 2) fallback: кластеры или импульсы без message
-    if typ in ("MTF", "CLUSTER", "IMPULSE") and tf == VALID_TF:
+    if typ in ("MTF", "CLUSTER", "IMPULSE") and tf in (VALID_TF_15M, VALID_TF_1H):
         if ticker and direction in ("UP", "DOWN"):
             with lock:
                 signals.append((time.time(), ticker, direction, tf))
@@ -578,9 +574,6 @@ def webhook():
             log_signal(ticker, direction, tf, typ or "CLUSTER", entry, stop, target)
             return jsonify({"status": "ok"}), 200
 
-    return jsonify({"status": "ignored"}), 200
-
-    # ничего полезного
     return jsonify({"status": "ignored"}), 200
 
 # =============== 🧠 КЛАСТЕР-ВОРКЕР ===============
@@ -632,10 +625,10 @@ def cluster_worker():
                 if now - last_cluster_sent["UP"] > CLUSTER_WINDOW_MIN * 60:
                     send_telegram(
                         f"🟢 *CLUSTER UP* — {len(ups)} из {len(tickers_seen)} монет "
-                        f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
+                        f"(TF {VALID_TF_15M}, {CLUSTER_WINDOW_MIN} мин)\n"
                         f"📈 {', '.join(sorted(list(ups)))}"
                     )
-                    log_signal(",".join(sorted(list(ups))), "UP", VALID_TF, "CLUSTER")
+                    log_signal(",".join(sorted(list(ups))), "UP", VALID_TF_15M, "CLUSTER")
                     last_cluster_sent["UP"] = now
                 else:
                     print("[COOLDOWN] skip UP cluster notify")
@@ -647,7 +640,7 @@ def cluster_worker():
                         f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
                         f"📉 {', '.join(sorted(list(downs)))}"
                     )
-                    log_signal(",".join(sorted(list(downs))), "DOWN", VALID_TF, "CLUSTER")
+                    log_signal(",".join(sorted(list(downs))), "DOWN", VALID_TF_15M, "CLUSTER")
                     last_cluster_sent["DOWN"] = now
                 else:
                     print("[COOLDOWN] skip DOWN cluster notify")
@@ -1093,6 +1086,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
