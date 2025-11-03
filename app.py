@@ -1030,7 +1030,7 @@ def simulate():
         entry     = float(data.get("entry", 68000))
         stop      = float(data.get("stop", 67500))
         target    = float(data.get("target", 69000))
-        tf        = str(data.get("tf", VALID_TF))
+        tf        = str(data.get("tf", VALID_TF_15M))
 
         # 1) лог + телега (как было)
         msg = (
@@ -1043,7 +1043,7 @@ def simulate():
         send_telegram(msg)
 
         # 2) добавляем в очередь кластеров (если tf совпадает)
-        if tf == VALID_TF and direction in ("UP", "DOWN"):
+        if tf == VALID_TF_15M and direction in ("UP", "DOWN"):
             now = time.time()
             with lock:
                 signals.append((now, ticker, direction, tf))
@@ -1086,6 +1086,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
