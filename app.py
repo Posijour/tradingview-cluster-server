@@ -1024,7 +1024,7 @@ def stats():
     except Exception as e:
         return f"<h3>❌ Ошибка анализа: {html_esc(e)}</h3>", 500
 
-# =============== симулате ===============
+# =============== 🧪 SIMULATE (15m + 1h) ===============
 @app.route("/simulate", methods=["POST"])
 def simulate():
     # тот же ключ, что и у /webhook
@@ -1042,7 +1042,7 @@ def simulate():
         target    = float(data.get("target", 69000))
         tf        = str(data.get("tf", VALID_TF_15M))
 
-        # 1) лог + телега (как было)
+        # === 1) лог + уведомление
         msg = (
             f"📊 *SIMULATED SIGNAL*\n"
             f"{ticker} {direction} ({tf})\n"
@@ -1052,12 +1052,18 @@ def simulate():
         log_signal(ticker, direction, tf, "SIMULATED", entry, stop, target)
         send_telegram(msg)
 
-        # 2) добавляем в очередь кластеров (если tf совпадает)
-        if tf == VALID_TF_15M and direction in ("UP", "DOWN"):
-            now = time.time()
+        # === 2) направляем в нужную очередь ===
+        now = time.time()
+        if direction in ("UP", "DOWN"):
             with lock:
-                signals.append((now, ticker, direction, tf))
-            print(f"🧪 [SIM] queued {ticker} {direction} ({tf}) for cluster window")
+                if tf == VALID_TF_15M:
+                    signals_15m.append((now, ticker, direction, tf))
+                    print(f"🧪 [SIM] queued {ticker} {direction} (15m) for cluster window")
+                elif tf == VALID_TF_1H:
+                    signals_1h.append((now, ticker, direction, tf))
+                    print(f"🧪 [SIM] queued {ticker} {direction} (1h) for cluster window")
+                else:
+                    print(f"⚠️ [SIM] Unknown TF {tf}, ignored")
 
         return jsonify({
             "status": "ok",
@@ -1096,6 +1102,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
