@@ -637,7 +637,7 @@ def cluster_worker():
                 if now - last_cluster_sent["DOWN"] > CLUSTER_WINDOW_MIN * 60:
                     send_telegram(
                         f"🔴 *CLUSTER DOWN* — {len(downs)} из {len(tickers_seen)} монет "
-                        f"(TF {VALID_TF}, {CLUSTER_WINDOW_MIN} мин)\n"
+                        f"(TF {VALID_TF_15M}, {CLUSTER_WINDOW_MIN} мин)\n"
                         f"📉 {', '.join(sorted(list(downs)))}"
                     )
                     log_signal(",".join(sorted(list(downs))), "DOWN", VALID_TF_15M, "CLUSTER")
@@ -1086,6 +1086,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
