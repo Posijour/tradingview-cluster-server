@@ -720,6 +720,12 @@ def cluster_worker():
                 except Exception as e:
                     print("❌ Cluster auto-trade error:", e)
                     
+            time.sleep(CHECK_INTERVAL_SEC)
+            
+        except Exception as e:
+            print("💀 cluster_worker crashed, restarting in 10s:", e)
+            time.sleep(10)    
+            
 # =============== ВОРКЕР БЕКАПА ===============
 def backup_log_worker():
     """
@@ -1020,3 +1026,4 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
