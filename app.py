@@ -762,6 +762,7 @@ def cluster_worker_15m():
 
 # =============== 🧠 КЛАСТЕР-ВОРКЕР (1H уведомления, без торговли, с настройками из .env) ===============
 def cluster_worker_1h():
+    global last_cluster_trade
     print("⚙️ cluster_worker_1h started")
     last_cluster_sent_1h = {"UP": 0, "DOWN": 0}
     last_cluster_composition = {"UP": set(), "DOWN": set()}
@@ -1135,6 +1136,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
