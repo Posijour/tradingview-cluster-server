@@ -81,6 +81,7 @@ state_lock = threading.Lock()
 log_lock = threading.Lock()
 last_cluster_sent = {"UP": 0.0, "DOWN": 0.0}
 last_cluster_sent_15m = {"UP": 0.0, "DOWN": 0.0}
+last_cluster_trade = {"UP": 0, "DOWN": 0}
 
 app = Flask(__name__)
 
@@ -691,7 +692,7 @@ def cluster_worker_15m():
                         continue
 
                     # кулдаун
-                    if now - last_cluster_trade_15m[direction] < CLUSTER_COOLDOWN_SEC:
+                    if now - last_cluster_trade[direction] < CLUSTER_COOLDOWN_SEC:
                         print(f"[COOLDOWN] Skipping {direction} trade — waiting cooldown.")
                         continue
 
@@ -705,7 +706,7 @@ def cluster_worker_15m():
                         print(f"[DELAY] Waiting {mins:02d}m {secs:02d}s before auto-trade ({direction}).")
                         continue
 
-                    last_cluster_trade_15m[direction] = now
+                    last_cluster_trade[direction] = now
 
                     # белый список
                     if SYMBOL_WHITELIST and ticker not in SYMBOL_WHITELIST:
@@ -1134,6 +1135,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
