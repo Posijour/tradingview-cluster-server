@@ -707,9 +707,14 @@ def cluster_worker_15m():
                     ).json()
                     entry_price = float(resp["result"]["list"][0]["lastPrice"])
 
+                    # === Волатильность и адаптивный масштаб ===
                     atr_val = get_atr(ticker, period=14, interval="15")
                     atr_base = get_atr(ticker, period=100, interval="15")
-                    vol_scale = max(0.7, min(atr_val / max(atr_base, 0.0001), 1.3))
+                    
+                    raw_scale = atr_val / max(atr_base, 0.0001)
+                    # сглаживаем рост волатильности (при скачке ATR в 2 раза vol_scale растет только на +50%)
+                    vol_scale = 1 + (raw_scale - 1) * 0.5
+                    vol_scale = max(0.8, min(vol_scale, 1.2))
 
                     rr_stop   = atr_val * 0.8 * vol_scale
                     rr_target = atr_val * 3.0 * vol_scale
@@ -1116,5 +1121,6 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
