@@ -594,9 +594,8 @@ def webhook():
             return jsonify({"status": "ok"}), 200
 
     return jsonify({"status": "ignored"}), 200
-
-# =============== 🧠 КЛАСТЕР-ВОРКЕР (15m) ===============
-last_cluster_trade = {"UP": 0, "DOWN": 0}
+    
+# =============== 🧠 КЛАСТЕР-ВОРКЕР 15M ===============
 
 def cluster_worker_15m():
     print("⚙️ cluster_worker_15m started")
@@ -670,9 +669,23 @@ def cluster_worker_15m():
                     direction, ticker = None, None
 
                     if len(ups) >= CLUSTER_THRESHOLD and ups:
-                        direction, ticker = "UP", list(ups)[0]
+                        direction = "UP"
+                        # самый свежий тикер из апов
+                        for ts, t, d, _ in reversed(snapshot):
+                            if d == "UP" and t in ups:
+                                ticker = t
+                                break
+                        if ticker is None:
+                            ticker = next(iter(ups))
                     elif len(downs) >= CLUSTER_THRESHOLD and downs:
-                        direction, ticker = "DOWN", list(downs)[0]
+                        direction = "DOWN"
+                        # самый свежий тикер из даунов
+                        for ts, t, d, _ in reversed(snapshot):
+                            if d == "DOWN" and t in downs:
+                                ticker = t
+                                break
+                        if ticker is None:
+                            ticker = next(iter(downs))
 
                     if not direction:
                         continue
@@ -1121,6 +1134,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
