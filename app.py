@@ -534,7 +534,7 @@ def webhook():
             log_signal(ticker, direction, tf, "WEBHOOK", entry, stop, target)
 
         # === автоторговля по MTF ===
-        if TRADE_ENABLED and typ == "MTF" and tf == VALID_TF_15M:
+        if TRADE_ENABLED and typ == "MTF" and tf in (VALID_TF_15M, VALID_TF_1H):
             try:
                 if not (ticker and direction in ("UP", "DOWN")):
                     print("⛔ Нет symbol/direction — пропуск торговли")
@@ -1116,4 +1116,5 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
