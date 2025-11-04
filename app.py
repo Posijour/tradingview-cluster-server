@@ -598,6 +598,7 @@ def webhook():
 # =============== 🧠 КЛАСТЕР-ВОРКЕР 15M ===============
 
 def cluster_worker_15m():
+    global last_cluster_trade
     print("⚙️ cluster_worker_15m started")
     while True:
         try:
@@ -1134,6 +1135,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
