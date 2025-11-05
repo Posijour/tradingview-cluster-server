@@ -537,33 +537,29 @@ def webhook():
         # === автоторговля по MTF ===
         if TRADE_ENABLED and typ == "MTF" and tf in (VALID_TF_15M, VALID_TF_1H):
             try:
-                if not (ticker and direction in ("UP", "DOWN")):
-                    print("⛔ Нет symbol/direction — пропуск торговли")
-                    return jsonify({"status": "skipped"}), 200
-
-                if SYMBOL_WHITELIST and ticker not in SYMBOL_WHITELIST:
-                    print(f"⛔ {ticker} не в белом списке — пропуск торговли")
-                    return jsonify({"status": "skipped"}), 200
-
+                print(f"[MTF DEBUG] entry={entry}, stop={stop}, target={target}, ticker={ticker}, dir={direction}")
+                
                 if not all([entry, stop, target]):
                     print("ℹ️ Нет entry/stop/target — пропуск автоторговли")
                     return jsonify({"status": "skipped"}), 200
-
+        
+                try:
+                    entry_f, stop_f, target_f = float(entry), float(stop), float(target)
+                except Exception as e:
+                    print(f"⚠️ Ошибка конверсии в float: {e}")
+                    return jsonify({"status": "skipped"}), 200
+        
                 side = "Sell" if direction == "UP" else "Buy"
                 set_leverage(ticker, LEVERAGE)
-
-                qty = calc_qty_from_risk(float(entry), float(stop), MAX_RISK_USDT, ticker)
+        
+                qty = calc_qty_from_risk(entry_f, stop_f, MAX_RISK_USDT, ticker)
                 if qty <= 0:
                     print("⚠️ Qty <= 0 — торговля пропущена")
                     return jsonify({"status": "skipped"}), 200
+        
+                resp = place_order_market_with_limit_tp_sl(ticker, side, qty, target_f, stop_f)
+                print("✅ AUTO-TRADE (MTF) result:", resp)
 
-                resp = place_order_market_with_limit_tp_sl(
-                    ticker,
-                    side,
-                    qty,
-                    float(target),
-                    float(stop)
-                )
 
                 print("✅ AUTO-TRADE (MTF) result:", resp)
                 send_telegram(
@@ -829,6 +825,8 @@ def cluster_worker_1h():
             print("💀 cluster_worker_1h crashed, restarting in 10s:", e)
             time.sleep(10)
 
+from datetime import datetime, timezone
+
 # =============== ВОРКЕР БЕКАПА ===============
 def backup_log_worker():
     """
@@ -850,7 +848,7 @@ def backup_log_worker():
                     should_send = (last_size < 0) or (size_now > last_size)
 
                 if should_send and size_now > 0:
-                    ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+                    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
                     caption = f"📦 signals_log.csv backup ({ts}) | size: {size_now//1024} KB"
                     ok = send_telegram_document(LOG_FILE, caption=caption)
                     if ok:
@@ -861,7 +859,6 @@ def backup_log_worker():
             print("❌ Backup worker error:", e)
 
         time.sleep(max(60, BACKUP_INTERVAL_MIN * 60))
-
 
 # =============== 💙 HEARTBEAT В ТЕЛЕГУ ===============
 def heartbeat_loop():
@@ -1136,6 +1133,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
