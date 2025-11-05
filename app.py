@@ -163,46 +163,23 @@ def send_telegram_document(filepath: str, caption: str = ""):
             print(f"⚠️ File too large for Telegram: {size_mb:.1f} MB")
             return False
 
-        files = {"document": (os.path.basename(filepath), open(filepath, "rb"))}
-        data = {"chat_id": CHAT_ID, "caption": caption[:1024]}  # caption <= 1024
-        r = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument",
-            data=data,
-            files=files,
-            timeout=20
-        )
+        with open(filepath, "rb") as f:
+            files = {"document": (os.path.basename(filepath), f)}
+            data = {"chat_id": CHAT_ID, "caption": caption[:1024]}  # caption ≤ 1024 символов
+            r = requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument",
+                data=data,
+                files=files,
+                timeout=20
+            )
+
         ok = (r.status_code == 200)
         print("✅ Sent CSV to Telegram" if ok else f"❌ Telegram sendDocument error: {r.text}")
         return ok
+
     except Exception as e:
         print("❌ Telegram sendDocument exception:", e)
         return False
-
-
-    def _send_with_rate_limit():
-        try:
-            # антифлуд вынесен сюда
-            now = monotonic()
-            tg_times.append(now)
-
-            # не чаще 1 сообщения в секунду
-            if len(tg_times) >= 2 and now - tg_times[-2] < 1.0:
-                time.sleep(1.0 - (now - tg_times[-2]))
-
-            # и не более 20 за минуту
-            if len(tg_times) == tg_times.maxlen and now - tg_times[0] < 60:
-                time.sleep(60 - (now - tg_times[0]))
-
-            requests.get(
-                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                params={"chat_id": CHAT_ID, "text": safe_text, "parse_mode": "MarkdownV2"},
-                timeout=8,
-            )
-            print("✅ Sent to Telegram")
-        except Exception as e:
-            print("❌ Telegram error:", e)
-
-    threading.Thread(target=_send_with_rate_limit, daemon=True).start()
 
 # =============== 📝 ЛОГИРОВАНИЕ сигналов В CSV ===============
 def log_signal(ticker, direction, tf, sig_type, entry=None, stop=None, target=None):
@@ -1168,3 +1145,4 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
