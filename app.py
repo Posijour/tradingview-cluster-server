@@ -552,7 +552,34 @@ def webhook():
         
                 side = "Sell" if direction == "UP" else "Buy"
                 set_leverage(ticker, LEVERAGE)
-        
+
+                # === глобальная проверка волатильности BTC ===
+                if GLOBAL_VOL_BLOCK.get("active", False):
+                    active_for = int((time.time() - GLOBAL_VOL_BLOCK.get("since", 0)) // 60)
+                    print(f"[GLOBAL VOL] MTF autotrade paused ({active_for}m active) — BTC volatility high.")
+                    send_telegram(
+                        f"⚠️ *MTF AUTO-TRADE BLOCKED*\nBTC volatility elevated for {active_for}m.\n"
+                        f"Skipping {ticker} {direction}."
+                    )
+                    return jsonify({"status": "skipped"}), 200
+                
+                # === локальная проверка волатильности конкретного тикера ===
+                try:
+                    atr_val_local = get_atr(ticker, period=14, interval="15")
+                    atr_base_local = get_atr(ticker, period=100, interval="15")
+                    ratio_local = atr_val_local / max(atr_base_local, 0.0001)
+                
+                    print(f"[LOCAL VOL][MTF] {ticker} ratio_local={ratio_local:.2f}")
+                    if ratio_local > 2.0:
+                        print(f"[LOCAL VOL] {ticker} volatility ratio {ratio_local:.2f} — skip this MTF trade.")
+                        send_telegram(
+                            f"⚠️ *LOCAL VOLATILITY SKIP (MTF)*\n"
+                            f"{ticker}: ATR ratio {ratio_local:.2f} > 2.0 — торговля пропущена."
+                        )
+                        return jsonify({"status": "skipped"}), 200
+                except Exception as e:
+                    print(f"[WARN] Local volatility check failed for {ticker}: {e}")
+
                 qty = calc_qty_from_risk(entry_f, stop_f, MAX_RISK_USDT, ticker)
                 if qty <= 0:
                     print("⚠️ Qty <= 0 — торговля пропущена")
@@ -1186,6 +1213,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
