@@ -82,7 +82,6 @@ log_lock = threading.Lock()
 last_cluster_sent = {"UP": 0.0, "DOWN": 0.0}
 last_cluster_sent_15m = {"UP": 0.0, "DOWN": 0.0}
 last_cluster_trade = {"UP": 0, "DOWN": 0}
-GLOBAL_VOL_BLOCK = {"active": False, "since": 0}
 
 app = Flask(__name__)
 
@@ -861,34 +860,6 @@ def cluster_worker_1h():
             print("💀 cluster_worker_1h crashed, restarting in 10s:", e)
             time.sleep(10)
 
-def btc_volatility_guard():
-    """
-    Следит за волатильностью BTCUSDT и включает глобальную блокировку автоторговли,
-    если волатильность выше нормы. Выключает, когда рынок остынет.
-    """
-    print("🧘 BTC volatility guard started")
-    while True:
-        try:
-            atr_val = get_atr("BTCUSDT", period=14, interval="15")
-            atr_base = get_atr("BTCUSDT", period=100, interval="15")
-            ratio = atr_val / max(atr_base, 0.0001)
-
-            if ratio > 1.6 and not GLOBAL_VOL_BLOCK["active"]:
-                GLOBAL_VOL_BLOCK["active"] = True
-                GLOBAL_VOL_BLOCK["since"] = time.time()
-                print(f"🚫 BTC volatility ratio {ratio:.2f} — global trading block ENABLED.")
-                send_telegram(f"⚠️ *GLOBAL VOLATILITY BLOCK*\nBTCUSDT ATR ratio {ratio:.2f} > 1.6 — автоторговля приостановлена.")
-
-            elif ratio < 1.3 and GLOBAL_VOL_BLOCK["active"]:
-                GLOBAL_VOL_BLOCK["active"] = False
-                print(f"✅ BTC volatility ratio {ratio:.2f} — global trading block DISABLED.")
-                send_telegram(f"✅ *GLOBAL VOLATILITY NORMALIZED*\nBTCUSDT ATR ratio {ratio:.2f} < 1.3 — автоторговля возобновлена.")
-
-        except Exception as e:
-            print("❌ BTC volatility guard error:", e)
-
-        time.sleep(300)  # проверка каждые 5 минут
-
 from datetime import datetime, timezone
 
 # =============== ВОРКЕР БЕКАПА ===============
@@ -1191,22 +1162,9 @@ if __name__ == "__main__":
     threading.Thread(target=cluster_worker_1h, daemon=True).start()
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     threading.Thread(target=backup_log_worker, daemon=True).start()
-    threading.Thread(target=btc_volatility_guard, daemon=True).start()
 
     # Получаем порт от Render (или 8080 локально)
     port = int(os.getenv("PORT", "8080"))
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
-
-
-
-
-
-
-
-
-
-
-
-
