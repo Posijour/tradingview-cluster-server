@@ -500,22 +500,19 @@ def webhook():
     stop       = payload.get("stop")
     target     = payload.get("target")
 
-   # 1) боевой сигнал с message
+    # === 1) боевой сигнал с message ===
     if msg:
-        # === фильтрация старых уведомлений ===
-        MAX_SIGNAL_AGE_SEC = 3600  # 60 минут
+        # --- фильтрация старых уведомлений ---
+        MAX_SIGNAL_AGE_SEC = 3600
         signal_time = None
-    
-        # TradingView может прислать время в payload
         if "time" in payload:
             try:
                 signal_time = float(payload["time"])
             except Exception:
                 pass
-    
         if not signal_time:
             signal_time = time.time()
-    
+
         age = time.time() - signal_time
         if age > MAX_SIGNAL_AGE_SEC:
             print(f"⏳ Old signal ({int(age)}s) — skip Telegram alert")
@@ -523,7 +520,7 @@ def webhook():
             send_telegram(msg)
             print(f"📨 Forwarded MTF alert: {ticker} {direction}")
 
-        # === ДОБАВЛЯЕМ СИГНАЛ В НУЖНУЮ ОЧЕРЕДЬ ===
+        # --- добавляем сигнал в очередь ---
         if ticker and direction in ("UP", "DOWN"):
             with lock:
                 if tf == VALID_TF_15M:
@@ -532,7 +529,6 @@ def webhook():
                 elif tf == VALID_TF_1H:
                     signals_1h.append((time.time(), ticker, direction, tf))
                     print(f"[WH] queued {ticker} {direction} ({tf}) for 1h cluster window")
-
             log_signal(ticker, direction, tf, "WEBHOOK", entry, stop, target)
 
         # === автоторговля по MTF ===
@@ -553,34 +549,27 @@ def webhook():
                 side = "Sell" if direction == "UP" else "Buy"
                 set_leverage(ticker, LEVERAGE)
 
-                # === глобальная проверка волатильности BTC ===
-                if GLOBAL_VOL_BLOCK.get("active", False):
-                    active_for = int((time.time() - GLOBAL_VOL_BLOCK.get("since", 0)) // 60)
-                    print(f"[GLOBAL VOL] MTF autotrade paused ({active_for}m active) — BTC volatility high.")
-                    send_telegram(
-                        f"⚠️ *MTF AUTO-TRADE BLOCKED*\nBTC volatility elevated for {active_for}m.\n"
-                        f"Skipping {ticker} {direction}."
-                    )
-                    return jsonify({"status": "skipped"}), 200
-                
-                # === локальная проверка волатильности конкретного тикера ===
-                try:
-                    atr_val_local = get_atr(ticker, period=14, interval="15")
-                    atr_base_local = get_atr(ticker, period=100, interval="15")
-                    ratio_local = atr_val_local / max(atr_base_local, 0.0001)
-                
-                    print(f"[LOCAL VOL][MTF] {ticker} ratio_local={ratio_local:.2f}")
-                    if ratio_local > 2.0:
-                        print(f"[LOCAL VOL] {ticker} volatility ratio {ratio_local:.2f} — skip this MTF trade.")
-                        send_telegram(
-                            f"⚠️ *LOCAL VOLATILITY SKIP (MTF)*\n"
-                            f"{ticker}: ATR ratio {ratio_local:.2f} > 2.0 — торговля пропущена."
-                        )
-                        return jsonify({"status": "skipped"}), 200
-                except Exception as e:
-                    print(f"[WARN] Local volatility check failed for {ticker}: {e}")
+                # === локальная проверка волатильности тикера и адаптация риска ===
+                atr_val_local = get_atr(ticker, period=14, interval="15")
+                atr_base_local = get_atr(ticker, period=100, interval="15")
+                ratio_local = atr_val_local / max(atr_base_local, 0.0001)
 
-                qty = calc_qty_from_risk(entry_f, stop_f, MAX_RISK_USDT, ticker)
+                # боевой режим — адаптивное снижение риска
+                risk_factor = 1.0
+                if ratio_local > 2.2:
+                    risk_factor = 0.4
+                elif ratio_local > 1.8:
+                    risk_factor = 0.6
+
+                effective_risk_usdt = MAX_RISK_USDT * risk_factor
+                if risk_factor < 1.0:
+                    print(f"[RISK] High volatility ({ratio_local:.2f}) — reducing risk ×{risk_factor}")
+                    send_telegram(
+                        f"⚠️ *MTF AUTO-RISK ADJUST*\n{ticker}: ATR ratio {ratio_local:.2f}\n"
+                        f"Risk scaled ×{risk_factor}"
+                    )
+
+                qty = calc_qty_from_risk(entry_f, stop_f, effective_risk_usdt, ticker)
                 if qty <= 0:
                     print("⚠️ Qty <= 0 — торговля пропущена")
                     return jsonify({"status": "skipped"}), 200
@@ -588,15 +577,14 @@ def webhook():
                 resp = place_order_market_with_limit_tp_sl(ticker, side, qty, target_f, stop_f)
                 print("✅ AUTO-TRADE (MTF) result:", resp)
 
-
-                print("✅ AUTO-TRADE (MTF) result:", resp)
                 send_telegram(
                     f"🚀 *AUTO-TRADE (MTF)*\n"
                     f"{ticker} {side}\n"
                     f"Qty: {qty}\n"
                     f"Entry~{entry}\n"
                     f"TP: {target}\n"
-                    f"SL: {stop}"
+                    f"SL: {stop}\n"
+                    f"Volatility ratio: {ratio_local:.2f}, Risk ×{risk_factor}"
                 )
 
             except Exception as e:
@@ -604,7 +592,7 @@ def webhook():
 
         return jsonify({"status": "forwarded"}), 200
 
-    # 2) fallback: кластеры или импульсы без message
+    # === 2) fallback: кластеры или импульсы без message ===
     if typ in ("MTF", "CLUSTER", "IMPULSE") and tf in (VALID_TF_15M, VALID_TF_1H):
         if ticker and direction in ("UP", "DOWN"):
             with lock:
@@ -619,7 +607,7 @@ def webhook():
             return jsonify({"status": "ok"}), 200
 
     return jsonify({"status": "ignored"}), 200
-    
+
 # =============== 🧠 КЛАСТЕР-ВОРКЕР 15M ===============
 
 def cluster_worker_15m():
@@ -630,7 +618,7 @@ def cluster_worker_15m():
             now = time.time()
             cutoff = now - CLUSTER_WINDOW_MIN * 60
 
-            # --- снапшот очереди + чистка старья
+            # --- снапшот очереди + чистка старья ---
             with lock:
                 while signals_15m and signals_15m[0][0] < cutoff:
                     signals_15m.popleft()
@@ -641,7 +629,7 @@ def cluster_worker_15m():
                 time.sleep(CHECK_INTERVAL_SEC)
                 continue
 
-            # --- отладка
+            # --- отладка ---
             try:
                 tickers_dbg = [s[1] for s in snapshot]
                 dirs_dbg = [s[2] for s in snapshot]
@@ -652,7 +640,7 @@ def cluster_worker_15m():
             except Exception:
                 pass
 
-            # --- считаем апы/дауны из снапшота
+            # --- считаем апы/дауны из снапшота ---
             ups, downs, tickers_seen = set(), set(), set()
             for (_, t, d, _) in snapshot:
                 tickers_seen.add(t)
@@ -663,7 +651,7 @@ def cluster_worker_15m():
 
             print(f"[DEBUG][15m] total={sig_count}, ups={len(ups)}, downs={len(downs)}")
 
-            # --- уведомления о кластерах (15m)
+            # --- уведомления о кластерах ---
             if len(ups) >= CLUSTER_THRESHOLD:
                 if now - last_cluster_sent_15m["UP"] > CLUSTER_WINDOW_MIN * 60:
                     send_telegram(
@@ -688,14 +676,13 @@ def cluster_worker_15m():
                 else:
                     print("[COOLDOWN] skip DOWN cluster notify")
 
-            # --- автоторговля по кластерам (15m)
+            # --- автоторговля по кластерам (15m) ---
             if TRADE_ENABLED:
                 try:
                     direction, ticker = None, None
 
                     if len(ups) >= CLUSTER_THRESHOLD and ups:
                         direction = "UP"
-                        # самый свежий тикер из апов
                         for ts, t, d, _ in reversed(snapshot):
                             if d == "UP" and t in ups:
                                 ticker = t
@@ -704,7 +691,6 @@ def cluster_worker_15m():
                             ticker = next(iter(ups))
                     elif len(downs) >= CLUSTER_THRESHOLD and downs:
                         direction = "DOWN"
-                        # самый свежий тикер из даунов
                         for ts, t, d, _ in reversed(snapshot):
                             if d == "DOWN" and t in downs:
                                 ticker = t
@@ -729,29 +715,26 @@ def cluster_worker_15m():
                         secs = int(remaining % 60)
                         print(f"[DELAY] Waiting {mins:02d}m {secs:02d}s before auto-trade ({direction}).")
                         continue
-                        
-                    # === глобальная проверка волатильности BTC ===
-                    if GLOBAL_VOL_BLOCK.get("active", False):
-                        active_for = int((time.time() - GLOBAL_VOL_BLOCK.get("since", 0)) // 60)
-                        print(f"[GLOBAL VOL] Autotrade paused ({active_for}m active) — BTC volatility high.")
-                        continue
-                    
-                    # === локальная проверка волатильности конкретного тикера ===
-                    try:
-                        atr_val_local = get_atr(ticker, period=14, interval="15")
-                        atr_base_local = get_atr(ticker, period=100, interval="15")
-                        ratio_local = atr_val_local / max(atr_base_local, 0.0001)
-                        print(f"[LOCAL VOL] {ticker} ratio_local={ratio_local:.2f}")
-                    
-                        if ratio_local > 2.0:
-                            print(f"[LOCAL VOL] {ticker} volatility ratio {ratio_local:.2f} — skip this symbol.")
-                            send_telegram(
-                                f"⚠️ *LOCAL VOLATILITY SKIP*\n"
-                                f"{ticker}: ATR ratio {ratio_local:.2f} > 2.0 — торговля пропущена."
-                            )
-                            continue
-                    except Exception as e:
-                        print(f"[WARN] Local volatility check failed for {ticker}: {e}")
+
+                    # === локальная проверка волатильности тикера и адаптация риска ===
+                    atr_val_local = get_atr(ticker, period=14, interval="15")
+                    atr_base_local = get_atr(ticker, period=100, interval="15")
+                    ratio_local = atr_val_local / max(atr_base_local, 0.0001)
+                    print(f"[LOCAL VOL] {ticker} ratio_local={ratio_local:.2f}")
+
+                    risk_factor = 1.0
+                    if ratio_local > 2.2:
+                        risk_factor = 0.4
+                    elif ratio_local > 1.8:
+                        risk_factor = 0.6
+
+                    if risk_factor < 1.0:
+                        print(f"[RISK] {ticker} high volatility ({ratio_local:.2f}) — risk scaled ×{risk_factor}")
+                        send_telegram(
+                            f"⚠️ *CLUSTER AUTO-RISK ADJUST*\n"
+                            f"{ticker}: ATR ratio {ratio_local:.2f}\n"
+                            f"Risk scaled ×{risk_factor}"
+                        )
 
                     last_cluster_trade[direction] = now
 
@@ -771,21 +754,22 @@ def cluster_worker_15m():
                     # === Волатильность и адаптивный масштаб ===
                     atr_val = get_atr(ticker, period=14, interval="15")
                     atr_base = get_atr(ticker, period=100, interval="15")
-                    
+
                     raw_scale = atr_val / max(atr_base, 0.0001)
-                    # сглаживаем рост волатильности (при скачке ATR в 2 раза vol_scale растет только на +50%)
                     vol_scale = 1 + (raw_scale - 1) * 0.5
                     vol_scale = max(0.8, min(vol_scale, 1.2))
 
-                    rr_stop   = atr_val * 0.8 * vol_scale
+                    rr_stop = atr_val * 0.8 * vol_scale
                     rr_target = atr_val * 3.0 * vol_scale
 
-                    stop_price   = entry_price + rr_stop   if direction == "UP" else entry_price - rr_stop
+                    stop_price = entry_price + rr_stop if direction == "UP" else entry_price - rr_stop
                     target_price = entry_price - rr_target if direction == "UP" else entry_price + rr_target
                     side = "Sell" if direction == "UP" else "Buy"
 
+                    # === расчет количества с учетом адаптивного риска ===
                     set_leverage(ticker, LEVERAGE)
-                    qty = calc_qty_from_risk(entry_price, stop_price, MAX_RISK_USDT, ticker)
+                    effective_risk_usdt = MAX_RISK_USDT * risk_factor
+                    qty = calc_qty_from_risk(entry_price, stop_price, effective_risk_usdt, ticker)
                     if qty <= 0:
                         raise ValueError("Qty <= 0 after normalization")
 
@@ -795,7 +779,8 @@ def cluster_worker_15m():
                         f"⚡ *CLUSTER AUTO-TRADE (15m)*\n"
                         f"{ticker} {side}\n"
                         f"Qty: {qty}\n"
-                        f"Entry~{entry_price}\nTP: {target_price}\nSL: {stop_price}"
+                        f"Entry~{entry_price}\nTP: {target_price}\nSL: {stop_price}\n"
+                        f"Volatility ratio: {ratio_local:.2f}, Risk ×{risk_factor}"
                     )
 
                 except Exception as e:
@@ -1213,6 +1198,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
