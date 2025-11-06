@@ -20,14 +20,15 @@ BACKUP_ONLY_IF_GROWS = os.getenv("BACKUP_ONLY_IF_GROWS", "true").lower() == "tru
 
 # Кластеры
 CLUSTER_WINDOW_MIN     = int(os.getenv("CLUSTER_WINDOW_MIN", "45"))     # окно кластеров в минутах
-CLUSTER_WINDOW_H1_MIN     = int(os.getenv("CLUSTER_WINDOW_H1_MIN", "90"))
+CLUSTER_WINDOW_5M_MIN     = int(os.getenv("CLUSTER_WINDOW_5M_MIN", "15"))
 CLUSTER_THRESHOLD      = int(os.getenv("CLUSTER_THRESHOLD", "6"))       # сколько разных монет в одну сторону, чтобы это считалось кластером
 CHECK_INTERVAL_SEC     = int(os.getenv("CHECK_INTERVAL_SEC", "10"))     # как часто воркер проверяет
+VALID_TF_5M = os.getenv("VALID_TF_5M", "5m")
 VALID_TF_15M = os.getenv("VALID_TF_15M", "15m")
 VALID_TF_1H  = os.getenv("VALID_TF_1H", "1h")
 WEBHOOK_SECRET         = os.getenv("WEBHOOK_SECRET", "")                # защита /webhook?key=...
 CLUSTER_COOLDOWN_SEC = CLUSTER_WINDOW_MIN * 60
-CLUSTER_H1_COOLDOWN_SEC   = int(os.getenv("CLUSTER_H1_COOLDOWN_SEC", "3600"))
+CLUSTER_5M_COOLDOWN_SEC   = int(os.getenv("CLUSTER_H1_COOLDOWN_SEC", "900"))
 CLUSTER_TRADE_DELAY_SEC = int(os.getenv("CLUSTER_TRADE_DELAY_SEC", "600"))  # 10 минут
 
 # Bybit
@@ -74,6 +75,7 @@ def _bybit_sign(payload: dict, method: str = "POST", query_string: str = ""):
 LOG_FILE = "/tmp/signals_log.csv"
 
 # =============== 🧠 ГЛОБАЛЬНЫЕ СТРУКТУРЫ СОСТОЯНИЯ ===============
+signals_5m = deque(maxlen=10000)
 signals_15m = deque(maxlen=5000)
 signals_1h = deque(maxlen=2000)
 lock = threading.Lock()
@@ -768,23 +770,23 @@ def cluster_worker_15m():
             print("💀 cluster_worker_15m crashed, restarting in 10s:", e)
             time.sleep(10)
 
-# =============== 🧠 КЛАСТЕР-ВОРКЕР (1H уведомления, без торговли, с настройками из .env) ===============
+# =============== 🧠 КЛАСТЕР-ВОРКЕР (5M уведомления, без торговли, с настройками из .env) ===============
 def cluster_worker_1h():
     global last_cluster_trade
-    print("⚙️ cluster_worker_1h started")
-    last_cluster_sent_1h = {"UP": 0, "DOWN": 0}
+    print("⚙️ cluster_worker_5m started")
+    last_cluster_sent_5m = {"UP": 0, "DOWN": 0}
     last_cluster_composition = {"UP": set(), "DOWN": set()}
 
     while True:
         try:
             time.sleep(1)
             now = time.time()
-            cutoff = now - CLUSTER_WINDOW_H1_MIN * 60
+            cutoff = now - CLUSTER_WINDOW_5M_MIN * 15
 
-            # --- берём только сигналы 1h
+            # --- берём только сигналы 5m
             with lock:
-                while signals_1h and signals_1h[0][0] < cutoff:
-                    signals_1h.popleft()
+                while signals_5m and signals_5m[0][0] < cutoff:
+                    signals_5m.popleft()
                 snapshot = list(signals_1h)
 
             if not snapshot:
@@ -799,42 +801,42 @@ def cluster_worker_1h():
                 elif d == "DOWN":
                     downs.add(t)
 
-            print(f"[1H DEBUG] signals={len(snapshot)}, ups={len(ups)}, downs={len(downs)}")
+            print(f"[5M DEBUG] signals={len(snapshot)}, ups={len(ups)}, downs={len(downs)}")
 
             # === 🟢 UP ===
             if len(ups) >= CLUSTER_THRESHOLD:
                 same_composition = ups == last_cluster_composition["UP"]
-                if (now - last_cluster_sent_1h["UP"] > CLUSTER_H1_COOLDOWN_SEC) and not same_composition:
+                if (now - last_cluster_sent_5m["UP"] > CLUSTER_5M_COOLDOWN_SEC) and not same_composition:
                     send_telegram(
-                        f"🟢 *CLUSTER 1H UP* — {len(ups)} из {len(tickers_seen)} монет "
-                        f"(TF 1H, окно {CLUSTER_WINDOW_H1_MIN} мин)\n"
+                        f"🟢 *CLUSTER 5M UP* — {len(ups)} из {len(tickers_seen)} монет "
+                        f"(TF 1H, окно {CLUSTER_WINDOW_5M_MIN} мин)\n"
                         f"📈 {', '.join(sorted(list(ups)))}",
                         channel="1h"
                     )
-                    log_signal(",".join(sorted(list(ups))), "UP", VALID_TF_1H, "CLUSTER_1H")
-                    last_cluster_sent_1h["UP"] = now
+                    log_signal(",".join(sorted(list(ups))), "UP", VALID_TF_1H, "CLUSTER_5M")
+                    last_cluster_sent_5m["UP"] = now
                     last_cluster_composition["UP"] = set(ups)
                 else:
-                    print("[1H COOL] skip UP cluster notify")
+                    print("[5M COOL] skip UP cluster notify")
             
             # === 🔴 DOWN ===
             if len(downs) >= CLUSTER_THRESHOLD:
                 same_composition = downs == last_cluster_composition["DOWN"]
-                if (now - last_cluster_sent_1h["DOWN"] > CLUSTER_H1_COOLDOWN_SEC) and not same_composition:
+                if (now - last_cluster_sent_5m["DOWN"] > CLUSTER_5M_COOLDOWN_SEC) and not same_composition:
                     send_telegram(
-                        f"🔴 *CLUSTER 1H DOWN* — {len(downs)} из {len(tickers_seen)} монет "
-                        f"(TF 1H, окно {CLUSTER_WINDOW_H1_MIN} мин)\n"
+                        f"🔴 *CLUSTER 5M DOWN* — {len(downs)} из {len(tickers_seen)} монет "
+                        f"(TF 1H, окно {CLUSTER_WINDOW_5M_MIN} мин)\n"
                         f"📉 {', '.join(sorted(list(downs)))}",
                         channel="1h"
                     )
-                    log_signal(",".join(sorted(list(downs))), "DOWN", VALID_TF_1H, "CLUSTER_1H")
-                    last_cluster_sent_1h["DOWN"] = now
+                    log_signal(",".join(sorted(list(downs))), "DOWN", VALID_TF_1H, "CLUSTER_5M")
+                    last_cluster_sent_5m["DOWN"] = now
                     last_cluster_composition["DOWN"] = set(downs)
                 else:
-                    print("[1H COOL] skip DOWN cluster notify")
+                    print("[5M COOL] skip DOWN cluster notify")
 
         except Exception as e:
-            print("💀 cluster_worker_1h crashed, restarting in 10s:", e)
+            print("💀 cluster_worker_5m crashed, restarting in 10s:", e)
             time.sleep(10)
 
 from datetime import datetime, timezone
@@ -1102,9 +1104,9 @@ def simulate():
                 if tf == VALID_TF_15M:
                     signals_15m.append((now, ticker, direction, tf))
                     print(f"🧪 [SIM] queued {ticker} {direction} (15m) for cluster window")
-                elif tf == VALID_TF_1H:
-                    signals_1h.append((now, ticker, direction, tf))
-                    print(f"🧪 [SIM] queued {ticker} {direction} (1h) for cluster window")
+                elif tf == VALID_TF_5M:
+                    signals_5m.append((now, ticker, direction, tf))
+                    print(f"🧪 [SIM] queued {ticker} {direction} (5m) for cluster window")
                 else:
                     print(f"⚠️ [SIM] Unknown TF {tf}, ignored")
 
@@ -1136,7 +1138,7 @@ if __name__ == "__main__":
 
     # Запуск фоновых потоков (в одном процессе)
     threading.Thread(target=cluster_worker_15m, daemon=True).start()
-    threading.Thread(target=cluster_worker_1h, daemon=True).start()
+    threading.Thread(target=cluster_worker_5m, daemon=True).start()
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     threading.Thread(target=backup_log_worker, daemon=True).start()
 
@@ -1145,4 +1147,5 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
