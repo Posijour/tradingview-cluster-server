@@ -516,60 +516,57 @@ def webhook():
         if TRADE_ENABLED and typ == "MTF" and tf in (VALID_TF_15M, VALID_TF_1H):
             try:
                 print(f"[MTF DEBUG] entry={entry}, stop={stop}, target={target}, ticker={ticker}, dir={direction}")
-                
                 if not all([entry, stop, target]):
                     print("ℹ️ Нет entry/stop/target — пропуск автоторговли")
                     return jsonify({"status": "skipped"}), 200
-        
-                try:
-                    entry_f, stop_f, target_f = float(entry), float(stop), float(target)
-                except Exception as e:
-                    print(f"⚠️ Ошибка конверсии в float: {e}")
-                    return jsonify({"status": "skipped"}), 200
-        
+
+                entry_f, stop_f, target_f = float(entry), float(stop), float(target)
                 side = "Sell" if direction == "UP" else "Buy"
                 set_leverage(ticker, LEVERAGE)
+                resp = place_order_market_with_limit_tp_sl(ticker, side, 
+                                                            calc_qty_from_risk(entry_f, stop_f, MAX_RISK_USDT, ticker),
+                                                            target_f, stop_f)
+                print("✅ AUTO-TRADE (MTF) result:", resp)
+                send_telegram(f"🚀 *AUTO-TRADE (MTF)* {ticker} {side} | Entry~{entry} | TP {target} | SL {stop}")
+            except Exception as e:
+                print("❌ Trade error (MTF):", e)
 
-                # === локальная проверка волатильности тикера и адаптация риска ===
-                atr_val_local = get_atr(ticker, period=14, interval="15")
-                atr_base_local = get_atr(ticker, period=100, interval="15")
-                ratio_local = atr_val_local / max(atr_base_local, 0.0001)
+        # === автоторговля по SCALP ===
+        if TRADE_ENABLED and typ == "SCALP":
+            try:
+                print(f"[SCALP] Processing {ticker} {direction} {tf}...")
 
-                # боевой режим — адаптивное снижение риска
-                risk_factor = 1.0
-                if ratio_local > 2.2:
-                    risk_factor = 0.4
-                elif ratio_local > 1.8:
-                    risk_factor = 0.6
+                if not all([entry, stop, target]):
+                    print("ℹ️ Нет entry/stop/target — пропуск SCALP торговли")
+                    return jsonify({"status": "skipped"}), 200
 
-                effective_risk_usdt = MAX_RISK_USDT * risk_factor
-                if risk_factor < 1.0:
-                    print(f"[RISK] High volatility ({ratio_local:.2f}) — reducing risk ×{risk_factor}")
-                    send_telegram(
-                        f"⚠️ *MTF AUTO-RISK ADJUST*\n{ticker}: ATR ratio {ratio_local:.2f}\n"
-                        f"Risk scaled ×{risk_factor}"
-                    )
+                entry_f, stop_f, target_f = float(entry), float(stop), float(target)
+                side = "Sell" if direction == "UP" else "Buy"
 
-                qty = calc_qty_from_risk(entry_f, stop_f, effective_risk_usdt, ticker)
+                # антипозиция (контртренд)
+                side = "Buy" if side == "Sell" else "Sell"
+
+                set_leverage(ticker, 20)
+                qty = calc_qty_from_risk(entry_f, stop_f, MAX_RISK_USDT * 0.5, ticker)
                 if qty <= 0:
                     print("⚠️ Qty <= 0 — торговля пропущена")
                     return jsonify({"status": "skipped"}), 200
-        
+
+                # лимитный тейк + стоп
                 resp = place_order_market_with_limit_tp_sl(ticker, side, qty, target_f, stop_f)
-                print("✅ AUTO-TRADE (MTF) result:", resp)
+                print("✅ AUTO-TRADE (SCALP) result:", resp)
 
                 send_telegram(
-                    f"🚀 *AUTO-TRADE (MTF)*\n"
+                    f"⚡ *AUTO-TRADE (SCALP)*\n"
                     f"{ticker} {side}\n"
                     f"Qty: {qty}\n"
                     f"Entry~{entry}\n"
                     f"TP: {target}\n"
-                    f"SL: {stop}\n"
-                    f"Volatility ratio: {ratio_local:.2f}, Risk ×{risk_factor}"
+                    f"SL: {stop}"
                 )
 
             except Exception as e:
-                print("❌ Trade error (MTF):", e)
+                print("❌ Trade error (SCALP):", e)
 
         return jsonify({"status": "forwarded"}), 200
 
@@ -838,6 +835,10 @@ def cluster_worker_5m():
 from datetime import datetime, timezone
 
 @app.route("/scalp", methods=["POST"])
+
+@app.route("/scalp", methods=["POST"])
+
+# =============== СКАЛЬПЕР ===============
 def handle_scalp():
     try:
         data = request.get_json(force=True)
@@ -874,16 +875,21 @@ def handle_scalp():
 
         msg = f"💥 SCALP {ticker} {direction}→{trade_dir} {tf} | Entry={entry:.6f} Stop={stop:.6f} Target={target:.6f}"
         print(msg)
+
+        # лог в файл
         log_signal(ticker, trade_dir, tf, "SCALP", entry, stop, target)
 
-        # === АВТОТРЕЙД ===
+        # === ВЕБХУК ===
+        # добавляем поле "type": "SCALP", чтобы /webhook понимал, что это торговый сигнал
         payload = {
+            "type": "SCALP",
             "ticker": ticker,
             "direction": trade_dir,
             "entry": entry,
             "stop": stop,
             "target": target,
-            "tf": tf
+            "tf": tf,
+            "message": msg
         }
 
         url = f"https://tradingview-cluster.onrender.com/webhook?key={api_key}"
@@ -901,6 +907,7 @@ def handle_scalp():
     except Exception as e:
         print(f"[ERROR scalp] {e}")
         return {"status": "error", "msg": str(e)}, 400
+
 
 def get_last_price(ticker: str):
     """Получаем последнюю цену с Bybit (линейные контракты)"""
@@ -1231,6 +1238,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
