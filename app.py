@@ -28,7 +28,7 @@ VALID_TF_15M = os.getenv("VALID_TF_15M", "15m")
 VALID_TF_1H  = os.getenv("VALID_TF_1H", "1h")
 WEBHOOK_SECRET         = os.getenv("WEBHOOK_SECRET", "")                # защита /webhook?key=...
 CLUSTER_COOLDOWN_SEC = CLUSTER_WINDOW_MIN * 60
-CLUSTER_5M_COOLDOWN_SEC   = int(os.getenv("CLUSTER_H1_COOLDOWN_SEC", "900"))
+CLUSTER_5M_COOLDOWN_SEC   = int(os.getenv("CLUSTER_5M_COOLDOWN_SEC", "900"))
 CLUSTER_TRADE_DELAY_SEC = int(os.getenv("CLUSTER_TRADE_DELAY_SEC", "600"))  # 10 минут
 
 # Bybit
@@ -106,7 +106,7 @@ def verify_signature(secret, body, signature):
 
 # =============== 📩 Telegram отправка с антифлудом ===============
 tg_times = deque(maxlen=20)
-tg_times_1h = deque(maxlen=20)  # отдельный буфер для 1H уведомлений
+tg_times_5m = deque(maxlen=20)  # отдельный буфер для 5m уведомлений
 
 def send_telegram(text: str, channel: str = "default"):
     """
@@ -123,7 +123,7 @@ def send_telegram(text: str, channel: str = "default"):
     def _send_with_rate_limit():
         try:
             # выбираем буфер по каналу
-            tg_queue = tg_times_1h if channel == "1h" else tg_times
+            tg_queue = tg_times_5m if channel == "5m" else tg_times
 
             now = monotonic()
             tg_queue.append(now)
@@ -501,7 +501,10 @@ def webhook():
         # --- добавляем сигнал в очередь ---
         if ticker and direction in ("UP", "DOWN"):
             with lock:
-                if tf == VALID_TF_15M:
+                if tf == VALID_TF_5M:
+                    signals_5m.append((time.time(), ticker, direction, tf))
+                    print(f"[WH] queued {ticker} {direction} ({tf}) for 5m cluster window")
+                elif tf == VALID_TF_15M:
                     signals_15m.append((time.time(), ticker, direction, tf))
                     print(f"[WH] queued {ticker} {direction} ({tf}) for 15m cluster window")
                 elif tf == VALID_TF_1H:
@@ -574,7 +577,10 @@ def webhook():
     if typ in ("MTF", "CLUSTER", "IMPULSE") and tf in (VALID_TF_15M, VALID_TF_1H):
         if ticker and direction in ("UP", "DOWN"):
             with lock:
-                if tf == VALID_TF_15M:
+                if tf == VALID_TF_5M:
+                    signals_5m.append((time.time(), ticker, direction, tf))
+                    print(f"[WH] queued {ticker} {direction} ({tf}) for 5m cluster window")
+                elif tf == VALID_TF_15M:
                     signals_15m.append((time.time(), ticker, direction, tf))
                     print(f"[WH] queued {ticker} {direction} ({tf}) for 15m cluster window")
                 elif tf == VALID_TF_1H:
@@ -779,15 +785,15 @@ def cluster_worker_5m():
 
     while True:
         try:
-            time.sleep(1)
+            time.sleep(CHECK_INTERVAL_SEC)
             now = time.time()
-            cutoff = now - CLUSTER_WINDOW_5M_MIN * 15
+            cutoff = now - CLUSTER_WINDOW_5M_MIN * 60
 
             # --- берём только сигналы 5m
             with lock:
                 while signals_5m and signals_5m[0][0] < cutoff:
                     signals_5m.popleft()
-                snapshot = list(signals_1h)
+                snapshot = list(signals_5m)
 
             if not snapshot:
                 time.sleep(CHECK_INTERVAL_SEC * 2)
@@ -813,7 +819,7 @@ def cluster_worker_5m():
                         f"📈 {', '.join(sorted(list(ups)))}",
                         channel="5m"
                     )
-                    log_signal(",".join(sorted(list(ups))), "UP", VALID_TF_1H, "CLUSTER_5M")
+                    log_signal(",".join(sorted(list(ups))), "UP", VALID_TF_5M, "CLUSTER_5M")
                     last_cluster_sent_5m["UP"] = now
                     last_cluster_composition["UP"] = set(ups)
                 else:
@@ -829,7 +835,7 @@ def cluster_worker_5m():
                         f"📉 {', '.join(sorted(list(downs)))}",
                         channel="5m"
                     )
-                    log_signal(",".join(sorted(list(downs))), "DOWN", VALID_TF_1H, "CLUSTER_5M")
+                    log_signal(",".join(sorted(list(downs))), "DOWN", VALID_TF_5M, "CLUSTER_5M")
                     last_cluster_sent_5m["DOWN"] = now
                     last_cluster_composition["DOWN"] = set(downs)
                 else:
@@ -1069,7 +1075,7 @@ def stats():
     except Exception as e:
         return f"<h3>❌ Ошибка анализа: {html_esc(e)}</h3>", 500
 
-# =============== 🧪 SIMULATE (15m + 1h) ===============
+# =============== 🧪 SIMULATE (15m + 5m) ===============
 @app.route("/simulate", methods=["POST"])
 def simulate():
     # тот же ключ, что и у /webhook
@@ -1147,6 +1153,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
