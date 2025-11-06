@@ -574,7 +574,7 @@ def webhook():
         return jsonify({"status": "forwarded"}), 200
 
     # === 2) fallback: кластеры или импульсы без message ===
-    if typ in ("MTF", "CLUSTER", "IMPULSE") and tf in (VALID_TF_15M, VALID_TF_1H):
+    if typ in ("MTF", "CLUSTER", "IMPULSE") and tf in (VALID_TF_5M, VALID_TF_15M, VALID_TF_1H):
         if ticker and direction in ("UP", "DOWN"):
             with lock:
                 if tf == VALID_TF_5M:
@@ -1153,6 +1153,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
