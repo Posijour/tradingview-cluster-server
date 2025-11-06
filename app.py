@@ -906,7 +906,7 @@ def dashboard():
     html = [
         "<h2>📈 Active Signals Dashboard</h2>",
         "<table border='1' cellpadding='4'>",
-        "<tr><th>Time (UTC)</th><th>Ticker</th><th>Direction</th><th>TF</th>"
+        "<tr><th>Time (UTC+2)</th><th>Ticker</th><th>Direction</th><th>TF</th>"
         "<th>Type</th><th>Entry</th><th>Stop</th><th>Target</th></tr>"
     ]
 
@@ -930,6 +930,13 @@ def dashboard():
                     parts.append("")
 
                 t, ticker, direction, tf, sig_type, entry, stop, target = parts[:8]
+
+                # преобразуем время UTC -> UTC+2
+                try:
+                    dt = datetime.strptime(t, "%Y-%m-%d %H:%M:%S") + timedelta(hours=2)
+                    t = dt.strftime("%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    pass
 
                 color = "#d4ffd4" if direction == "UP" else "#ffd4d4" if direction == "DOWN" else "#f4f4f4"
 
@@ -957,8 +964,11 @@ def dashboard():
         html.append(f"<tr><td colspan='8'>⚠️ Error reading log: {html_esc(e)}</td></tr>")
 
     html.append("</table>")
+
+    # добавляем сдвиг +2 часа для времени обновления
+    local_time = datetime.utcnow() + timedelta(hours=2)
     html.append(
-        f"<p style='color:gray'>Updated {html_esc(datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC'))}</p>"
+        f"<p style='color:gray'>Updated {html_esc(local_time.strftime('%Y-%m-%d %H:%M:%S UTC+2'))}</p>"
     )
     html.append(
         "<p style='font-size:small;color:gray'>Showing last 50 entries from log</p>"
@@ -1153,6 +1163,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
