@@ -617,10 +617,10 @@ def cluster_worker_15m():
             try:
                 tickers_dbg = [s[1] for s in snapshot]
                 dirs_dbg = [s[2] for s in snapshot]
-                print(f"[DEBUG][15m] signals len={sig_count}")
-                print(f"[DEBUG][15m] Tickers: {tickers_dbg}")
-                print(f"[DEBUG][15m] Directions: {dirs_dbg}")
-                print(f"[DEBUG][15m] cutoff={cutoff}, first={snapshot[0][0]}, last={snapshot[-1][0]}")
+                print(f"[15m][DEBUG] signals len={sig_count}")
+                print(f"[15m][DEBUG] Tickers: {tickers_dbg}")
+                print(f"[15m][DEBUG] Directions: {dirs_dbg}")
+                print(f"[15m][DEBUG] cutoff={cutoff}, first={snapshot[0][0]}, last={snapshot[-1][0]}")
             except Exception:
                 pass
 
@@ -633,7 +633,7 @@ def cluster_worker_15m():
                 elif d == "DOWN":
                     downs.add(t)
 
-            print(f"[DEBUG][15m] total={sig_count}, ups={len(ups)}, downs={len(downs)}")
+            print(f"[15m][DEBUG] total={sig_count}, ups={len(ups)}, downs={len(downs)}")
 
             # --- уведомления о кластерах ---
             if len(ups) >= CLUSTER_THRESHOLD:
@@ -1153,6 +1153,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
