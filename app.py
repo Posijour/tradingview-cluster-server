@@ -886,7 +886,7 @@ def handle_scalp():
             "tf": tf
         }
 
-        url = f"https://tradingview-cluster.onrender.com/execute?key={api_key}"
+        url = f"https://tradingview-cluster.onrender.com/webhook?key={api_key}"
 
         import requests
         resp = requests.post(url, json=payload, timeout=10)
@@ -1231,6 +1231,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
