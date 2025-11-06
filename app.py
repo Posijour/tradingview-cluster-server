@@ -837,33 +837,83 @@ def cluster_worker_5m():
 
 from datetime import datetime, timezone
 
-# =============== ⚡ SCALP SIGNAL HANDLER ===============
 @app.route("/scalp", methods=["POST"])
-print("RAW JSON:", request.data)
 def handle_scalp():
     try:
         data = request.get_json(force=True)
-        ticker = data.get("ticker", "UNKNOWN")
-        direction = data.get("direction", "UNKNOWN")
+        ticker = data.get("ticker", "").upper()
+        direction = data.get("direction", "").upper()
         tf = data.get("tf", "5m")
 
-        # простая логика: риск 0.4%, тейк 0.1%
-        risk_pct = 0.4
-        take_pct = 0.1
+        if not ticker or direction not in ["UP", "DOWN"]:
+            return {"status": "error", "msg": f"❌ Invalid request: {data}"}, 400
 
-        msg = f"💥 SCALP {ticker} {direction} {tf} | risk={risk_pct}% take={take_pct}%"
+        # === НАСТРОЙКИ ===
+        risk_pct = 0.1      # риск (стоп)
+        take_pct = 0.4      # профит
+        leverage = 20
+        api_key = "gloryglorymanunited"
+
+        # === ЦЕНА С БИРЖИ ===
+        price = get_last_price(ticker)
+        if price is None:
+            return {"status": "error", "msg": f"❌ Couldn't fetch price for {ticker}"}, 400
+
+        # === АНТИТРЕНД ===
+        # Если тренд UP — входим SHORT, если DOWN — LONG
+        if direction == "UP":
+            trade_dir = "DOWN"
+            entry = price
+            stop = round(price * (1 + risk_pct / 100), 6)
+            target = round(price * (1 - take_pct / 100), 6)
+        else:
+            trade_dir = "UP"
+            entry = price
+            stop = round(price * (1 - risk_pct / 100), 6)
+            target = round(price * (1 + take_pct / 100), 6)
+
+        msg = f"💥 SCALP {ticker} {direction}→{trade_dir} {tf} | Entry={entry:.6f} Stop={stop:.6f} Target={target:.6f}"
         print(msg)
+        log_signal("SCALP", ticker, trade_dir, tf, entry, stop, target, "-")
 
-        # логируем в общий лог
-        log_signal("SCALP", ticker, direction, tf, "-", "-", "-", "-")
+        # === АВТОТРЕЙД ===
+        payload = {
+            "ticker": ticker,
+            "direction": trade_dir,
+            "entry": entry,
+            "stop": stop,
+            "target": target,
+            "tf": tf
+        }
 
-        # тут можно добавить autotrade, если готово:
-        # execute_trade(ticker, direction, risk_pct, take_pct)
+        url = f"https://tradingview-cluster.onrender.com/execute?key={api_key}"
+
+        import requests
+        resp = requests.post(url, json=payload, timeout=10)
+
+        if resp.status_code == 200:
+            print(f"[AUTO] trade sent OK: {resp.text}")
+        else:
+            print(f"[AUTO] trade failed {resp.status_code}: {resp.text}")
 
         return {"status": "ok", "msg": msg}
 
     except Exception as e:
+        print(f"[ERROR scalp] {e}")
         return {"status": "error", "msg": str(e)}, 400
+
+def get_last_price(ticker: str):
+    """Получаем последнюю цену с Bybit (линейные контракты)"""
+    try:
+        import requests
+        url = f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={ticker}"
+        resp = requests.get(url, timeout=5)
+        data = resp.json()
+        if "result" in data and "list" in data["result"]:
+            return float(data["result"]["list"][0]["lastPrice"])
+    except Exception as e:
+        print(f"[WARN] get_last_price({ticker}) failed: {e}")
+    return None
 
 # =============== ВОРКЕР БЕКАПА ===============
 def backup_log_worker():
@@ -1181,6 +1231,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
