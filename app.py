@@ -771,7 +771,7 @@ def cluster_worker_15m():
             time.sleep(10)
 
 # =============== 🧠 КЛАСТЕР-ВОРКЕР (5M уведомления, без торговли, с настройками из .env) ===============
-def cluster_worker_1h():
+def cluster_worker_5m():
     global last_cluster_trade
     print("⚙️ cluster_worker_5m started")
     last_cluster_sent_5m = {"UP": 0, "DOWN": 0}
@@ -1147,5 +1147,6 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
