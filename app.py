@@ -84,6 +84,7 @@ log_lock = threading.Lock()
 last_cluster_sent = {"UP": 0.0, "DOWN": 0.0}
 last_cluster_sent_15m = {"UP": 0.0, "DOWN": 0.0}
 last_cluster_trade = {"UP": 0, "DOWN": 0}
+last_signals = {}
 
 app = Flask(__name__)
 
@@ -509,6 +510,15 @@ def webhook():
 
     # === 1) боевой сигнал с message ===
     if msg:
+        # --- антидубликат ---
+        global last_signals
+        now = time.time()
+        sig_id = f"{ticker}_{direction}_{tf}"
+        if sig_id in last_signals and now - last_signals[sig_id] < 240:  # 4 минуты
+            print(f"⚠️ Duplicate signal ignored: {sig_id}")
+            return jsonify({"status": "duplicate"}), 200
+        last_signals[sig_id] = now  
+         
         # --- фильтрация старых уведомлений ---
         MAX_SIGNAL_AGE_SEC = 3600
         signal_time = None
@@ -1269,6 +1279,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
