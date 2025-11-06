@@ -837,6 +837,33 @@ def cluster_worker_5m():
 
 from datetime import datetime, timezone
 
+# =============== ⚡ SCALP SIGNAL HANDLER ===============
+@app.route("/scalp", methods=["POST"])
+def handle_scalp():
+    try:
+        data = request.get_json(force=True)
+        ticker = data.get("ticker", "UNKNOWN")
+        direction = data.get("direction", "UNKNOWN")
+        tf = data.get("tf", "5m")
+
+        # простая логика: риск 0.4%, тейк 0.1%
+        risk_pct = 0.4
+        take_pct = 0.1
+
+        msg = f"💥 SCALP {ticker} {direction} {tf} | risk={risk_pct}% take={take_pct}%"
+        print(msg)
+
+        # логируем в общий лог
+        log_signal("SCALP", ticker, direction, tf, "-", "-", "-", "-")
+
+        # тут можно добавить autotrade, если готово:
+        # execute_trade(ticker, direction, risk_pct, take_pct)
+
+        return {"status": "ok", "msg": msg}
+
+    except Exception as e:
+        return {"status": "error", "msg": str(e)}, 400
+
 # =============== ВОРКЕР БЕКАПА ===============
 def backup_log_worker():
     """
@@ -1153,6 +1180,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
