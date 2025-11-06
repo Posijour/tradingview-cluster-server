@@ -809,9 +809,9 @@ def cluster_worker_5m():
                 if (now - last_cluster_sent_5m["UP"] > CLUSTER_5M_COOLDOWN_SEC) and not same_composition:
                     send_telegram(
                         f"🟢 *CLUSTER 5M UP* — {len(ups)} из {len(tickers_seen)} монет "
-                        f"(TF 1H, окно {CLUSTER_WINDOW_5M_MIN} мин)\n"
+                        f"(TF 5M, окно {CLUSTER_WINDOW_5M_MIN} мин)\n"
                         f"📈 {', '.join(sorted(list(ups)))}",
-                        channel="1h"
+                        channel="5m"
                     )
                     log_signal(",".join(sorted(list(ups))), "UP", VALID_TF_1H, "CLUSTER_5M")
                     last_cluster_sent_5m["UP"] = now
@@ -825,9 +825,9 @@ def cluster_worker_5m():
                 if (now - last_cluster_sent_5m["DOWN"] > CLUSTER_5M_COOLDOWN_SEC) and not same_composition:
                     send_telegram(
                         f"🔴 *CLUSTER 5M DOWN* — {len(downs)} из {len(tickers_seen)} монет "
-                        f"(TF 1H, окно {CLUSTER_WINDOW_5M_MIN} мин)\n"
+                        f"(TF 5M, окно {CLUSTER_WINDOW_5M_MIN} мин)\n"
                         f"📉 {', '.join(sorted(list(downs)))}",
-                        channel="1h"
+                        channel="5m"
                     )
                     log_signal(",".join(sorted(list(downs))), "DOWN", VALID_TF_1H, "CLUSTER_5M")
                     last_cluster_sent_5m["DOWN"] = now
@@ -1147,6 +1147,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
