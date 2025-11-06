@@ -372,6 +372,35 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
         resp_sl = bybit_post("/v5/order/create", sl_payload)
         print("✅ SL stop order:", resp_sl)
 
+                # === 5. Очистка стопов после закрытия позиции ===
+        def _cleanup_orders():
+            try:
+                time.sleep(3)
+                for _ in range(10):  # максимум 10 проверок (примерно 30 секунд)
+                    r = requests.get(
+                        f"{BYBIT_BASE_URL}/v5/position/list",
+                        params={"category": "linear", "symbol": symbol},
+                        timeout=5
+                    ).json()
+                    pos_list = ((r.get("result") or {}).get("list") or [])
+                    size_open = 0.0
+                    for p in pos_list:
+                        if p.get("symbol") == symbol:
+                            size_open = abs(float(p.get("size", 0)))
+                    if size_open == 0:
+                        print(f"✅ Position closed for {symbol}, cleaning stop orders")
+                        cancel_payload = {"category": "linear", "symbol": symbol}
+                        headers, body = _bybit_sign(cancel_payload)
+                        requests.post(f"{BYBIT_BASE_URL}/v5/order/cancel-all",
+                                      headers=headers, data=body, timeout=5)
+                        return
+                    time.sleep(3)
+                print(f"⚠️ Cleanup timeout for {symbol}, SL may remain active")
+            except Exception as e:
+                print(f"❌ Cleanup error ({symbol}): {e}")
+
+        threading.Thread(target=_cleanup_orders, daemon=True).start()
+
         return {"entry": resp_open, "tp": resp_tp, "sl": resp_sl}
 
     except Exception as e:
@@ -1240,6 +1269,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
