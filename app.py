@@ -874,7 +874,7 @@ def handle_scalp():
 
         msg = f"💥 SCALP {ticker} {direction}→{trade_dir} {tf} | Entry={entry:.6f} Stop={stop:.6f} Target={target:.6f}"
         print(msg)
-        log_signal("SCALP", ticker, trade_dir, tf, entry, stop, target, "-")
+        log_signal(ticker, trade_dir, tf, "SCALP", entry, stop, target)
 
         # === АВТОТРЕЙД ===
         payload = {
@@ -1231,6 +1231,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
