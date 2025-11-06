@@ -839,6 +839,7 @@ from datetime import datetime, timezone
 
 # =============== ⚡ SCALP SIGNAL HANDLER ===============
 @app.route("/scalp", methods=["POST"])
+print("RAW JSON:", request.data)
 def handle_scalp():
     try:
         data = request.get_json(force=True)
@@ -1180,6 +1181,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
