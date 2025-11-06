@@ -690,16 +690,6 @@ def cluster_worker_15m():
                         print(f"[COOLDOWN] Skipping {direction} trade — waiting cooldown.")
                         continue
 
-                    # задержка после подтверждения
-                    cluster_confirm_time = last_cluster_sent_15m.get(direction, 0)
-                    elapsed = now - cluster_confirm_time
-                    if elapsed < CLUSTER_TRADE_DELAY_SEC:
-                        remaining = CLUSTER_TRADE_DELAY_SEC - elapsed
-                        mins = int(remaining // 60)
-                        secs = int(remaining % 60)
-                        print(f"[DELAY] Waiting {mins:02d}m {secs:02d}s before auto-trade ({direction}).")
-                        continue
-
                     # === локальная проверка волатильности тикера и адаптация риска ===
                     atr_val_local = get_atr(ticker, period=14, interval="15")
                     atr_base_local = get_atr(ticker, period=100, interval="15")
@@ -1163,6 +1153,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
