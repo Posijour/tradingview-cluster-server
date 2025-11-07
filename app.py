@@ -657,8 +657,7 @@ def webhook():
                 print("❌ Trade error (SCALP):", e)
 
         return jsonify({"status": "forwarded"}), 200
-
-    # === 5️⃣ FAIL MODE ===
+# === 5️⃣ FAIL MODE ===
     if typ == "FAIL":
         if not FAIL_ENABLED:
             print(f"⏸ FAIL MODE disabled by env. {ticker} {direction}")
@@ -669,17 +668,56 @@ def webhook():
             try:
                 entry_f, stop_f, target_f = float(entry), float(stop), float(target)
                 side = "Buy" if direction == "UP" else "Sell"
+
                 set_leverage(ticker, LEVERAGE)
                 qty = calc_qty_from_risk(entry_f, stop_f, MAX_RISK_USDT, ticker)
-                resp = place_order_market_with_limit_tp_sl(ticker, side, qty, target_f, stop_f)
-                print("✅ AUTO-TRADE (FAIL MODE) result:", resp)
-                send_telegram(
-                    f"⚡ *AUTO-TRADE (FAIL MODE)*\n{ticker} {side}\nEntry:{entry}\nTP:{target}\nSL:{stop}"
+                if qty <= 0:
+                    print(f"⚠️ FAIL skipped for {ticker} — qty=0")
+                    return jsonify({"status": "skipped"}), 200
+
+                resp = place_order_market_with_limit_tp_sl(
+                    ticker, side, qty, target_f, stop_f
                 )
+                print("✅ AUTO-TRADE (FAIL MODE) result:", resp)
+
+                # === Принудительная очистка стопов через 15 сек ===
+                def cleanup_orders_force(symbol):
+                    try:
+                        cancel_payload = {"category": "linear", "symbol": symbol}
+                        headers, body = _bybit_sign(cancel_payload)
+                        requests.post(
+                            f"{BYBIT_BASE_URL}/v5/order/cancel-all",
+                            headers=headers,
+                            data=body,
+                            timeout=5
+                        )
+                        print(f"🧹 Forced cleanup for {symbol}")
+                    except Exception as e:
+                        print(f"❌ Forced cleanup error ({symbol}): {e}")
+
+                threading.Thread(
+                    target=lambda: (time.sleep(15), cleanup_orders_force(ticker)),
+                    daemon=True
+                ).start()
+
+                # === Telegram уведомление ===
+                sl_pct = round(abs(stop_f - entry_f) / entry_f * 100, 3)
+                tp_pct = round(abs(target_f - entry_f) / entry_f * 100, 3)
+
+                send_telegram(
+                    f"⚡ *AUTO-TRADE (FAIL MODE)*\n"
+                    f"{ticker} {side}\n"
+                    f"Entry:{entry_f}\n"
+                    f"TP:{target_f} ({tp_pct}%)\n"
+                    f"SL:{stop_f} ({sl_pct}%)"
+                )
+
                 log_signal(ticker, direction, tf, "FAIL", entry, stop, target)
+
             except Exception as e:
                 print("💀 FAIL MODE error:", e)
                 return jsonify({"status": "error", "error": str(e)}), 500
+
         return jsonify({"status": "ok"}), 200
 
     # === 6️⃣ fallback: кластеры без message ===
@@ -1345,5 +1383,6 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
