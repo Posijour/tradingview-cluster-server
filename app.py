@@ -488,7 +488,7 @@ def parse_payload(req) -> dict:
         "target":    data.get("target"),
     }
 
-# =============== 🔔 ВЕБХУК ОТ TRADINGVIEW ===============
+# =============== 🔔 ВЕБХУК ОТ TRADINGVIEW (MTF / SCALP / CLUSTER / FAIL) ===============
 @app.route("/webhook", methods=["POST"])
 def webhook():
     # простейшая защита url ?key=SECRET
@@ -498,7 +498,6 @@ def webhook():
             return "forbidden", 403
 
     payload = parse_payload(request)
-
     typ        = payload.get("type", "")
     tf         = payload.get("tf", "")
     msg        = payload.get("message", "")
@@ -508,37 +507,35 @@ def webhook():
     stop       = payload.get("stop")
     target     = payload.get("target")
 
-    # === 1) боевой сигнал с message ===
-    if msg:
-        # --- антидубликат ---
-        global last_signals
-        now = time.time()
-        sig_id = f"{ticker}_{direction}_{tf}"
-        if sig_id in last_signals and now - last_signals[sig_id] < 1800:  # 30 минут
-            print(f"⚠️ Duplicate signal ignored: {sig_id}")
-            return jsonify({"status": "duplicate"}), 200
-        last_signals[sig_id] = now  
-         
-        # --- фильтрация старых уведомлений ---
-        MAX_SIGNAL_AGE_SEC = 3600
-        signal_time = None
-        if "time" in payload:
-            try:
-                signal_time = float(payload["time"])
-            except Exception:
-                pass
-        if not signal_time:
-            signal_time = time.time()
+    # === флаги окружения ===
+    MTF_ENABLED     = os.getenv("MTF_ENABLED", "false").lower() == "true"
+    CLUSTER_ENABLED = os.getenv("CLUSTER_ENABLED", "false").lower() == "true"
+    SCALP_ENABLED   = os.getenv("SCALP_ENABLED", "false").lower() == "true"
+    FAIL_ENABLED    = os.getenv("FAIL_ENABLED", "false").lower() == "true"
 
+    # --- антидубликат (3 мин по типу+тикеру+направлению+tf) ---
+    global last_signals
+    now = time.time()
+    sig_id = f"{typ}_{ticker}_{direction}_{tf}"
+    if sig_id in last_signals and now - last_signals[sig_id] < 180:
+        print(f"⚠️ Duplicate signal ignored: {sig_id}")
+        return jsonify({"status": "duplicate"}), 200
+    last_signals[sig_id] = now
+
+    # === 1️⃣ Базовая логика: Telegram, очереди, логирование ===
+    if msg:
+        MAX_SIGNAL_AGE_SEC = 3600
+        signal_time = float(payload.get("time", time.time()))
         age = time.time() - signal_time
+
         if age > MAX_SIGNAL_AGE_SEC:
             print(f"⏳ Old signal ({int(age)}s) — skip Telegram alert")
         else:
             send_telegram(msg)
-            print(f"📨 Forwarded MTF alert: {ticker} {direction}")
+            print(f"📨 Forwarded alert: {ticker} {direction}")
 
-        # --- добавляем сигнал в очередь ---
-        if ticker and direction in ("UP", "DOWN"):
+        # === Кладём сигнал в очереди ТОЛЬКО если кластеры включены ===
+        if CLUSTER_ENABLED and ticker and direction in ("UP", "DOWN"):
             with lock:
                 if tf == VALID_TF_5M:
                     signals_5m.append((time.time(), ticker, direction, tf))
@@ -549,42 +546,42 @@ def webhook():
                 elif tf == VALID_TF_1H:
                     signals_1h.append((time.time(), ticker, direction, tf))
                     print(f"[WH] queued {ticker} {direction} ({tf}) for 1h cluster window")
-            # логируем только если сигнал не из SCALP, чтобы не было дублей
-            if typ != "SCALP":
-                log_signal(ticker, direction, tf, "WEBHOOK", entry, stop, target)
 
-        # === автоторговля по MTF ===
-        if TRADE_ENABLED and typ == "MTF" and tf in (VALID_TF_15M, VALID_TF_1H):
+        # логируем только если не SCALP (чтобы не было дублей)
+        if typ != "SCALP":
+            log_signal(ticker, direction, tf, typ or "WEBHOOK", entry, stop, target)
+
+    # === 2️⃣ MTF ===
+    if typ == "MTF":
+        if not MTF_ENABLED:
+            print(f"⏸ MTF trade disabled by env. {ticker} {direction}")
+            return jsonify({"status": "paused"}), 200
+
+        if TRADE_ENABLED:
             try:
-                print(f"[MTF DEBUG] entry={entry}, stop={stop}, target={target}, ticker={ticker}, dir={direction}")
-                if not all([entry, stop, target]):
-                    print("ℹ️ Нет entry/stop/target — пропуск автоторговли")
-                    return jsonify({"status": "skipped"}), 200
-
                 entry_f, stop_f, target_f = float(entry), float(stop), float(target)
                 side = "Sell" if direction == "UP" else "Buy"
                 set_leverage(ticker, LEVERAGE)
-                resp = place_order_market_with_limit_tp_sl(ticker, side, 
-                                                            calc_qty_from_risk(entry_f, stop_f, MAX_RISK_USDT, ticker),
-                                                            target_f, stop_f)
+                qty = calc_qty_from_risk(entry_f, stop_f, MAX_RISK_USDT, ticker)
+                resp = place_order_market_with_limit_tp_sl(ticker, side, qty, target_f, stop_f)
                 print("✅ AUTO-TRADE (MTF) result:", resp)
-                send_telegram(f"🚀 *AUTO-TRADE (MTF)* {ticker} {side} | Entry~{entry} | TP {target} | SL {stop}")
+                send_telegram(f"🚀 *AUTO-TRADE (MTF)* {ticker} {side}\nTP {target}\nSL {stop}")
+                log_signal(ticker, direction, tf, "MTF", entry, stop, target)
             except Exception as e:
                 print("❌ Trade error (MTF):", e)
+        return jsonify({"status": "forwarded"}), 200
 
-        # === автоторговля по SCALP ===
-        if TRADE_ENABLED and typ == "SCALP":
+    # === 3️⃣ SCALP ===
+    if typ == "SCALP":
+        if not SCALP_ENABLED:
+            print(f"⏸ SCALP trade disabled by env. {ticker} {direction}")
+            return jsonify({"status": "paused"}), 200
+
+        if TRADE_ENABLED:
             try:
-                print(f"[SCALP] Processing {ticker} {direction} {tf}...")
-
-                if not all([entry, stop, target]):
-                    print("ℹ️ Нет entry/stop/target — пропуск SCALP торговли")
-                    return jsonify({"status": "skipped"}), 200
-
                 entry_f, stop_f, target_f = float(entry), float(stop), float(target)
                 side = "Sell" if direction == "UP" else "Buy"
-
-                # антипозиция (контртренд)
+                # контртренд
                 side = "Buy" if side == "Sell" else "Sell"
 
                 set_leverage(ticker, 20)
@@ -593,26 +590,62 @@ def webhook():
                     print("⚠️ Qty <= 0 — торговля пропущена")
                     return jsonify({"status": "skipped"}), 200
 
-                # лимитный тейк + стоп
                 resp = place_order_market_with_limit_tp_sl(ticker, side, qty, target_f, stop_f)
                 print("✅ AUTO-TRADE (SCALP) result:", resp)
-
                 send_telegram(
-                    f"⚡ *AUTO-TRADE (SCALP)*\n"
-                    f"{ticker} {side}\n"
-                    f"Qty: {qty}\n"
-                    f"Entry~{entry}\n"
-                    f"TP: {target}\n"
-                    f"SL: {stop}"
+                    f"⚡ *AUTO-TRADE (SCALP)*\n{ticker} {side}\nEntry~{entry}\nTP:{target}\nSL:{stop}"
                 )
-
+                log_signal(ticker, direction, tf, "SCALP", entry, stop, target)
             except Exception as e:
                 print("❌ Trade error (SCALP):", e)
-
         return jsonify({"status": "forwarded"}), 200
 
-    # === 2) fallback: кластеры или импульсы без message ===
-    if typ in ("MTF", "CLUSTER", "IMPULSE") and tf in (VALID_TF_5M, VALID_TF_15M, VALID_TF_1H):
+    # === 4️⃣ CLUSTER ===
+    if typ == "CLUSTER":
+        if not CLUSTER_ENABLED:
+            print(f"⏸ CLUSTER trade disabled by env. {ticker} {direction}")
+            log_signal(ticker, direction, tf, "CLUSTER", entry, stop, target)
+            return jsonify({"status": "paused"}), 200
+
+        # при включенном кластере просто добавляем в очередь
+        if ticker and direction in ("UP", "DOWN"):
+            with lock:
+                if tf == VALID_TF_5M:
+                    signals_5m.append((time.time(), ticker, direction, tf))
+                elif tf == VALID_TF_15M:
+                    signals_15m.append((time.time(), ticker, direction, tf))
+                elif tf == VALID_TF_1H:
+                    signals_1h.append((time.time(), ticker, direction, tf))
+            log_signal(ticker, direction, tf, "CLUSTER", entry, stop, target)
+        print(f"ℹ️ CLUSTER signal accepted: {ticker} {direction}")
+        return jsonify({"status": "ok"}), 200
+
+    # === 5️⃣ FAIL MODE ===
+    if typ == "FAIL":
+        if not FAIL_ENABLED:
+            print(f"⏸ FAIL MODE disabled by env. {ticker} {direction}")
+            log_signal(ticker, direction, tf, "FAIL", entry, stop, target)
+            return jsonify({"status": "paused"}), 200
+
+        if TRADE_ENABLED:
+            try:
+                entry_f, stop_f, target_f = float(entry), float(stop), float(target)
+                side = "Buy" if direction == "UP" else "Sell"
+                set_leverage(ticker, LEVERAGE)
+                qty = calc_qty_from_risk(entry_f, stop_f, MAX_RISK_USDT, ticker)
+                resp = place_order_market_with_limit_tp_sl(ticker, side, qty, target_f, stop_f)
+                print("✅ AUTO-TRADE (FAIL MODE) result:", resp)
+                send_telegram(
+                    f"⚡ *AUTO-TRADE (FAIL MODE)*\n{ticker} {side}\nEntry:{entry}\nTP:{target}\nSL:{stop}"
+                )
+                log_signal(ticker, direction, tf, "FAIL", entry, stop, target)
+            except Exception as e:
+                print("💀 FAIL MODE error:", e)
+                return jsonify({"status": "error", "error": str(e)}), 500
+        return jsonify({"status": "ok"}), 200
+
+    # === 6️⃣ fallback: кластеры без message ===
+    if typ == "CLUSTER" and CLUSTER_ENABLED and tf in (VALID_TF_5M, VALID_TF_15M, VALID_TF_1H):
         if ticker and direction in ("UP", "DOWN"):
             with lock:
                 if tf == VALID_TF_5M:
@@ -624,10 +657,10 @@ def webhook():
                 elif tf == VALID_TF_1H:
                     signals_1h.append((time.time(), ticker, direction, tf))
                     print(f"[WH] queued {ticker} {direction} ({tf}) for 1h cluster window")
-
-            log_signal(ticker, direction, tf, typ or "CLUSTER", entry, stop, target)
+            log_signal(ticker, direction, tf, "CLUSTER", entry, stop, target)
             return jsonify({"status": "ok"}), 200
 
+    # === 7️⃣ fallback общий ===
     return jsonify({"status": "ignored"}), 200
 
 # =============== 🧠 КЛАСТЕР-ВОРКЕР 15M ===============
@@ -1279,6 +1312,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
