@@ -45,6 +45,7 @@ SYMBOL_WHITELIST = set(
     s.strip().upper() for s in os.getenv("SYMBOL_WHITELIST","").split(",") if s.strip()
 )
 
+
 # =============== 🔐 BYBIT SIGN FUNCTION (проверенная) ===============
 def _bybit_sign(payload: dict, method: str = "POST", query_string: str = ""):
     ts = str(int(time.time() * 1000))
@@ -1312,6 +1313,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
