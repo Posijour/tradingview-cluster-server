@@ -927,8 +927,8 @@ def handle_scalp():
             return {"status": "error", "msg": f"❌ Invalid request: {data}"}, 400
 
         # === НАСТРОЙКИ ===
-        risk_pct = 0.1      # риск (стоп)
-        take_pct = 0.4      # профит
+        risk_pct = 0.2      # риск (стоп)
+        take_pct = 0.7      # профит
         leverage = 20
         api_key = "gloryglorymanunited"
 
@@ -1312,6 +1312,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
