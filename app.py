@@ -514,7 +514,7 @@ def webhook():
         global last_signals
         now = time.time()
         sig_id = f"{ticker}_{direction}_{tf}"
-        if sig_id in last_signals and now - last_signals[sig_id] < 240:  # 4 минуты
+        if sig_id in last_signals and now - last_signals[sig_id] < 1800:  # 30 минут
             print(f"⚠️ Duplicate signal ignored: {sig_id}")
             return jsonify({"status": "duplicate"}), 200
         last_signals[sig_id] = now  
@@ -1279,6 +1279,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
