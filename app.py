@@ -591,7 +591,7 @@ def webhook():
                     return jsonify({"status": "error"}), 400
     
                 # === АДАПТИВНЫЙ ATR ===
-                atr = get_atr(ticker, period=atr_period, interval="1")
+                atr = get_atr(ticker, period=atr_period, interval="5")
                 if atr <= 0:
                     atr = entry_f * 0.002  # запасной ATR
                     print(f"[ATR warn] {ticker}: fallback ATR {atr:.6f}")
@@ -1347,3 +1347,4 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
