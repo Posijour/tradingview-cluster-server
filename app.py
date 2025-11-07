@@ -356,23 +356,33 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
         # === 3. Сторона выхода ===
         exit_side = "Sell" if side == "Buy" else "Buy"
 
-        # === 4. Take Profit ===
+        # === 4. Take Profit (лимит) ===
+        buffer_tp = 0.0015 if current_price > 1 else 0.003  # запас, чтобы TP не отклонялся
+        tp_safe = float(tp_price)
+
+        if side == "Buy":
+            if tp_safe <= current_price:  # TP ниже рынка — двигаем выше
+                tp_safe = round(current_price * (1 + buffer_tp), 6)
+        else:
+            if tp_safe >= current_price:  # TP выше рынка — двигаем ниже
+                tp_safe = round(current_price * (1 - buffer_tp), 6)
+
         tp_payload = {
             "category": "linear",
             "symbol": symbol,
             "side": exit_side,
             "orderType": "Limit",
             "qty": str(qty),
-            "price": str(tp_price),
-            "reduceOnly": True
+            "price": str(tp_safe),
+            "reduceOnly": True,
+            "timeInForce": "GoodTillCancel"
         }
         resp_tp = bybit_post("/v5/order/create", tp_payload)
-        print("✅ TP limit order:", resp_tp)
+        print(f"✅ TP limit order (safe): {resp_tp}")
 
-        # === 5. Stop Loss ===
-        buffer_mult = 0.0015 if current_price > 1 else 0.003
+        # === 5. Stop Loss (условный рыночный) ===
+        buffer_mult = 0.002 if current_price > 1 else 0.005
 
-        # корректное направление триггера
         if side == "Buy":
             trigger_dir = 1  # ждём падения
             if sl_price >= current_price:
@@ -381,6 +391,13 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
             trigger_dir = 2  # ждём роста
             if sl_price <= current_price:
                 sl_price = round(current_price * (1 + buffer_mult), 6)
+
+        # защита: стоп не может быть ближе 0.1% к цене
+        if abs(current_price - sl_price) / current_price < 0.001:
+            if side == "Buy":
+                sl_price = round(current_price * (1 - 0.0015), 6)
+            else:
+                sl_price = round(current_price * (1 + 0.0015), 6)
 
         sl_payload = {
             "category": "linear",
@@ -394,9 +411,8 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
             "closeOnTrigger": True,
             "triggerDirection": trigger_dir
         }
-
         resp_sl = bybit_post("/v5/order/create", sl_payload)
-        print("✅ SL stop order:", resp_sl)
+        print("✅ SL stop order (safe):", resp_sl)
 
         # === 6. Очистка стопов и тейков после закрытия позиции ===
         def _cleanup_orders():
@@ -1415,6 +1431,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
