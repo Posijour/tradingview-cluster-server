@@ -600,105 +600,100 @@ def webhook():
                 print("❌ Trade error (MTF):", e)
         return jsonify({"status": "forwarded"}), 200
 
-# =============== 3️⃣ SCALP (тренд + адаптивный ATR) ===============
-    if typ == "SCALP":
-        if not SCALP_ENABLED:
-            print(f"⏸ SCALP trade disabled by env. {ticker} {direction}")
-            return jsonify({"status": "paused"}), 200
+# =============== 3️⃣ SCALP (тренд + адаптивный ATR с нормализатором) ===============
+if typ == "SCALP":
+    if not SCALP_ENABLED:
+        print(f"⏸ SCALP trade disabled by env. {ticker} {direction}")
+        return jsonify({"status": "paused"}), 200
 
-        if TRADE_ENABLED:
-            try:
-                # === БАЗОВЫЕ НАСТРОЙКИ ===
-                atr_period = 14
-                atr_mult_sl = 0.5
-                atr_mult_tp = 1.7
-                tf = "1m"
+    if TRADE_ENABLED:
+        try:
+            # === БАЗОВЫЕ НАСТРОЙКИ ===
+            atr_period = 14
+            tf = "1m"
+            target_sl_pct = 0.0025  # хотим стоп около 0.25%
+            rr_ratio = 3.0          # R:R = 3:1
 
-                # === НАЧАЛЬНЫЕ ДАННЫЕ ===
-                entry_f = float(entry) if entry else get_last_price(ticker)
-                if not entry_f:
-                    print(f"⚠️ Нет entry и не удалось получить цену для {ticker}")
-                    return jsonify({"status": "error"}), 400
+            # === НАЧАЛЬНЫЕ ДАННЫЕ ===
+            entry_f = float(entry) if entry else get_last_price(ticker)
+            if not entry_f:
+                print(f"⚠️ Нет entry и не удалось получить цену для {ticker}")
+                return jsonify({"status": "error"}), 400
 
-                # === АДАПТИВНЫЙ ATR ===
-                atr = get_atr(ticker, period=atr_period, interval="5")
-                if atr <= 0:
-                    atr = entry_f * 0.002  # запасной ATR
-                    print(f"[ATR warn] {ticker}: fallback ATR {atr:.6f}")
+            # === АДАПТИВНЫЙ ATR ===
+            atr = get_atr(ticker, period=atr_period, interval="5")
+            if atr <= 0:
+                atr = entry_f * 0.002  # запасной ATR
+                print(f"[ATR warn] {ticker}: fallback ATR {atr:.6f}")
 
-                # === РАСЧЕТ СТОПА, ТЕЙКА и процентов ===
-                if direction == "UP":
-                    stop_f = round(entry_f - atr * atr_mult_sl, 6)
-                    target_f = round(entry_f + atr * atr_mult_tp, 6)
-                    side = "Buy"
-                else:
-                    stop_f = round(entry_f + atr * atr_mult_sl, 6)
-                    target_f = round(entry_f - atr * atr_mult_tp, 6)
-                    side = "Sell"
+            # === АДАПТИВНЫЙ МНОЖИТЕЛЬ (нормализация ATR под 0.25%) ===
+            atr_rel = atr / entry_f  # ATR в долях цены
+            atr_mult_sl = target_sl_pct / atr_rel
+            atr_mult_tp = atr_mult_sl * rr_ratio
 
-                sl_pct = round(abs(stop_f - entry_f) / entry_f * 100, 3)
-                tp_pct = round(abs(target_f - entry_f) / entry_f * 100, 3)
+            # === РАСЧЁТ СТОПА И ТЕЙКА ===
+            if direction == "UP":
+                stop_f = round(entry_f - atr * atr_mult_sl, 6)
+                target_f = round(entry_f + atr * atr_mult_tp, 6)
+                side = "Buy"
+            else:
+                stop_f = round(entry_f + atr * atr_mult_sl, 6)
+                target_f = round(entry_f - atr * atr_mult_tp, 6)
+                side = "Sell"
 
-                msg = (
-                    f"⚡ SCALP {ticker} {side} | Entry={entry_f:.6f} "
-                    f"Stop={stop_f:.6f} ({sl_pct}%) Target={target_f:.6f} ({tp_pct}%)"
-                )
-                print(msg)
+            # === ПРОЦЕНТНЫЕ ВЕЛИЧИНЫ SL/TP ===
+            sl_pct = round(abs((entry_f - stop_f) / entry_f) * 100, 3)
+            tp_pct = round(abs((target_f - entry_f) / entry_f) * 100, 3)
 
-                # === ТОРГОВЛЯ ===
-                set_leverage(ticker, 20)
-                qty = calc_qty_from_risk(entry_f, stop_f, MAX_RISK_USDT * 0.5, ticker)
-                if qty <= 0:
-                    print("⚠️ Qty <= 0 — торговля пропущена")
-                    return jsonify({"status": "skipped"}), 200
+            msg = (
+                f"⚡ SCALP {ticker} {side} | Entry={entry_f:.6f} "
+                f"Stop={stop_f:.6f} Target={target_f:.6f} "
+                f"(SL={sl_pct}%, TP={tp_pct}%)"
+            )
+            print(msg)
 
-                resp = place_order_market_with_limit_tp_sl(
-                    ticker, side, qty, target_f, stop_f
-                )
-                print("✅ AUTO-TRADE (SCALP) result:", resp)
+            # === ТОРГОВЛЯ ===
+            set_leverage(ticker, 20)
+            qty = calc_qty_from_risk(entry_f, stop_f, MAX_RISK_USDT * 0.5, ticker)
+            if qty <= 0:
+                print("⚠️ Qty <= 0 — торговля пропущена")
+                return jsonify({"status": "skipped"}), 200
 
-                # === Принудительная очистка стопов через 15 сек ===
-                def cleanup_orders_force(symbol):
-                    try:
-                        cancel_payload = {"category": "linear", "symbol": symbol}
-                        headers, body = _bybit_sign(cancel_payload)
-                        resp = requests.post(
-                            f"{BYBIT_BASE_URL}/v5/order/cancel-all",
-                            headers=headers,
-                            data=body,
-                            timeout=8
-                        )
-                        if resp.status_code == 200:
-                            txt = resp.text.strip()
-                            if txt:
-                                print(f"🧹 Forced cleanup OK for {symbol}: {txt[:80]}...")
-                            else:
-                                print(f"⚠️ Cleanup empty response for {symbol}")
-                        else:
-                            print(f"⚠️ Cleanup HTTP {resp.status_code} for {symbol}: {resp.text}")
-                    except Exception as e:
-                        print(f"❌ Forced cleanup error ({symbol}): {e}")
+            resp = place_order_market_with_limit_tp_sl(ticker, side, qty, target_f, stop_f)
+            print("✅ AUTO-TRADE (SCALP) result:", resp)
 
-                threading.Thread(
-                    target=lambda: (time.sleep(15), cleanup_orders_force(ticker)),
-                    daemon=True
-                ).start()
+            # === ОПОВЕЩЕНИЕ В TG ===
+            send_telegram(
+                f"⚡ *AUTO-TRADE (SCALP)*\n"
+                f"{ticker} {side}\n"
+                f"Entry~{entry_f}\n"
+                f"TP:{target_f} ({tp_pct}%)\n"
+                f"SL:{stop_f} ({sl_pct}%)"
+            )
 
-                send_telegram(
-                    f"⚡ *AUTO-TRADE (SCALP)*\n"
-                    f"{ticker} {side}\n"
-                    f"Entry~{entry_f}\n"
-                    f"TP:{target_f} ({tp_pct}%)\n"
-                    f"SL:{stop_f} ({sl_pct}%)"
-                )
+            # === Принудительная очистка стопов через 15 сек ===
+            def cleanup_orders_force(symbol):
+                try:
+                    cancel_payload = {"category": "linear", "symbol": symbol}
+                    headers, body = _bybit_sign(cancel_payload)
+                    requests.post(f"{BYBIT_BASE_URL}/v5/order/cancel-all",
+                                  headers=headers, data=body, timeout=5)
+                    print(f"🧹 Forced cleanup for {symbol}")
+                except Exception as e:
+                    print(f"❌ Forced cleanup error ({symbol}): {e}")
 
-                log_signal(ticker, direction, tf, "SCALP", entry_f, stop_f, target_f)
+            threading.Thread(
+                target=lambda: (time.sleep(15), cleanup_orders_force(ticker)),
+                daemon=True
+            ).start()
 
-            except Exception as e:
-                print("❌ Trade error (SCALP):", e)
+            log_signal(ticker, direction, tf, "SCALP", entry_f, stop_f, target_f)
 
-        return jsonify({"status": "forwarded"}), 200
-        
+        except Exception as e:
+            print("❌ Trade error (SCALP):", e)
+
+    return jsonify({"status": "forwarded"}), 200
+
 # === 5️⃣ FAIL MODE ===
     if typ == "FAIL":
         if not FAIL_ENABLED:
@@ -1425,6 +1420,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
