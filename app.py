@@ -324,7 +324,7 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
     """
     Открывает рыночную позицию и ставит лимитный TP и условный SL.
     После закрытия позиции стоп автоматически удаляется.
-    Исправлена ошибка Bybit "expect Rising/Falling".
+    Исправлено направление triggerDirection (Bybit expect Rising/Falling).
     """
     try:
         # === 1. Открытие позиции ===
@@ -338,7 +338,7 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
         })
         print("✅ Market entry:", resp_open)
 
-        # --- Получаем текущую цену ---
+        # === 2. Получаем актуальную цену ===
         current_price = None
         try:
             r = requests.get(
@@ -348,15 +348,15 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
             ).json()
             current_price = float(r["result"]["list"][0]["lastPrice"])
         except Exception:
-            current_price = None
+            pass
 
         if not current_price:
             current_price = float(tp_price) if side == "Buy" else float(sl_price)
 
-        # === 2. Противоположная сторона для TP/SL ===
+        # === 3. Сторона выхода ===
         exit_side = "Sell" if side == "Buy" else "Buy"
 
-        # === 3. Take Profit (лимит) ===
+        # === 4. Take Profit ===
         tp_payload = {
             "category": "linear",
             "symbol": symbol,
@@ -364,20 +364,21 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
             "orderType": "Limit",
             "qty": str(qty),
             "price": str(tp_price),
-            "reduceOnly": True,
+            "reduceOnly": True
         }
         resp_tp = bybit_post("/v5/order/create", tp_payload)
         print("✅ TP limit order:", resp_tp)
 
-        # === 4. Stop Loss (условный рыночный) ===
-        # Автоматическое определение направления и безопасный буфер
+        # === 5. Stop Loss ===
         buffer_mult = 0.0015 if current_price > 1 else 0.003
+
+        # корректное направление триггера
         if side == "Buy":
-            trigger_dir = 1 if sl_price < current_price else 2
+            trigger_dir = 1  # ждём падения
             if sl_price >= current_price:
                 sl_price = round(current_price * (1 - buffer_mult), 6)
         else:
-            trigger_dir = 2 if sl_price > current_price else 1
+            trigger_dir = 2  # ждём роста
             if sl_price <= current_price:
                 sl_price = round(current_price * (1 + buffer_mult), 6)
 
@@ -391,14 +392,13 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
             "triggerBy": "LastPrice",
             "reduceOnly": True,
             "closeOnTrigger": True,
-            "positionIdx": 0,
             "triggerDirection": trigger_dir
         }
 
         resp_sl = bybit_post("/v5/order/create", sl_payload)
-        print("✅ SL stop order (safe):", resp_sl)
+        print("✅ SL stop order:", resp_sl)
 
-        # === 5. Очистка ордеров после закрытия позиции ===
+        # === 6. Очистка стопов и тейков после закрытия позиции ===
         def _cleanup_orders():
             try:
                 time.sleep(3)
@@ -409,25 +409,20 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
                         timeout=5
                     ).json()
                     pos_list = ((r.get("result") or {}).get("list") or [])
-                    size_open = 0.0
-                    for p in pos_list:
-                        if p.get("symbol") == symbol:
-                            size_open = abs(float(p.get("size", 0)))
-                    if size_open == 0:
+                    open_size = sum(abs(float(p.get("size", 0))) for p in pos_list if p.get("symbol") == symbol)
+                    if open_size == 0:
                         print(f"✅ Position closed for {symbol}, cleaning TP/SL orders")
                         cancel_payload = {"category": "linear", "symbol": symbol}
                         headers, body = _bybit_sign(cancel_payload)
                         requests.post(
                             f"{BYBIT_BASE_URL}/v5/order/cancel-all",
-                            headers=headers,
-                            data=body,
-                            timeout=5
+                            headers=headers, data=body, timeout=5
                         )
                         return
                     time.sleep(3)
                 print(f"⚠️ Cleanup timeout for {symbol}, TP/SL may remain active")
             except Exception as e:
-                print(f"❌ Cleanup error ({symbol}):", e)
+                print(f"❌ Cleanup error ({symbol}): {e}")
 
         threading.Thread(target=_cleanup_orders, daemon=True).start()
 
@@ -1420,6 +1415,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
