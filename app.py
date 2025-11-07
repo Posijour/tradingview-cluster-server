@@ -577,28 +577,32 @@ def webhook():
         if not SCALP_ENABLED:
             print(f"⏸ SCALP trade disabled by env. {ticker} {direction}")
             return jsonify({"status": "paused"}), 200
-
+    
         if TRADE_ENABLED:
             try:
                 entry_f, stop_f, target_f = float(entry), float(stop), float(target)
-                side = "Sell" if direction == "UP" else "Buy"
-                # контртренд
-                side = "Buy" if side == "Sell" else "Sell"
-
+    
+                # трендовая торговля: направление совпадает с direction
+                side = "Buy" if direction == "UP" else "Sell"
+    
                 set_leverage(ticker, 20)
                 qty = calc_qty_from_risk(entry_f, stop_f, MAX_RISK_USDT * 0.5, ticker)
                 if qty <= 0:
                     print("⚠️ Qty <= 0 — торговля пропущена")
                     return jsonify({"status": "skipped"}), 200
-
-                resp = place_order_market_with_limit_tp_sl(ticker, side, qty, target_f, stop_f)
+    
+                resp = place_order_market_with_limit_tp_sl(
+                    ticker, side, qty, target_f, stop_f
+                )
                 print("✅ AUTO-TRADE (SCALP) result:", resp)
                 send_telegram(
                     f"⚡ *AUTO-TRADE (SCALP)*\n{ticker} {side}\nEntry~{entry}\nTP:{target}\nSL:{stop}"
                 )
                 log_signal(ticker, direction, tf, "SCALP", entry, stop, target)
+    
             except Exception as e:
                 print("❌ Trade error (SCALP):", e)
+    
         return jsonify({"status": "forwarded"}), 200
 
     # === 4️⃣ CLUSTER ===
@@ -1313,6 +1317,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
