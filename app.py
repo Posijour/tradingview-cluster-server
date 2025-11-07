@@ -601,10 +601,10 @@ def webhook():
         return jsonify({"status": "forwarded"}), 200
 
 # =============== 3️⃣ SCALP (тренд + адаптивный ATR с нормализатором) ===============
-if typ == "SCALP":
-    if not SCALP_ENABLED:
-        print(f"⏸ SCALP trade disabled by env. {ticker} {direction}")
-        return jsonify({"status": "paused"}), 200
+    if typ == "SCALP":
+        if not SCALP_ENABLED:
+            print(f"⏸ SCALP trade disabled by env. {ticker} {direction}")
+            return jsonify({"status": "paused"}), 200
 
     if TRADE_ENABLED:
         try:
@@ -1420,6 +1420,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
