@@ -323,10 +323,10 @@ def set_leverage(symbol, leverage):
 def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_price: float, sl_price: float):
     """
     Открывает рыночную позицию и ставит условные лимитные TP и SL ордера (оба reduceOnly).
-    SL и TP — лимитные с триггером по цене (conditional), не рыночные.
+    TP и SL — в том же направлении, что и позиция (трендовая логика, без контртренда).
     """
     try:
-        # === 1. Открываем позицию
+        # === 1. Открываем позицию ===
         resp_open = bybit_post("/v5/order/create", {
             "category": "linear",
             "symbol": symbol,
@@ -337,30 +337,28 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
         })
         print("✅ Market entry:", resp_open)
 
-        # === 2. Противоположная сторона
-        opposite_side = "Buy" if side == "Sell" else "Sell"
+        # === 2. Противоположная сторона для закрытия позиции ===
+        exit_side = "Sell" if side == "Buy" else "Buy"
 
-        # === 3. Take Profit (лимит)
+        # === 3. Take Profit (лимит) ===
         tp_payload = {
             "category": "linear",
             "symbol": symbol,
-            "side": opposite_side,
+            "side": exit_side,
             "orderType": "Limit",
             "qty": str(qty),
             "price": str(tp_price),
             "reduceOnly": True,
-            # timeInForce вообще не нужен — Bybit сам ставит GTC
         }
         resp_tp = bybit_post("/v5/order/create", tp_payload)
         print("✅ TP limit order:", resp_tp)
-        
-        # === 4. Stop Loss (условный рыночный)
+
+        # === 4. Stop Loss (условный рыночный) ===
         trigger_dir = 2 if side == "Buy" else 1  # BUY ждёт падения, SELL ждёт роста
-        
         sl_payload = {
             "category": "linear",
             "symbol": symbol,
-            "side": opposite_side,
+            "side": exit_side,
             "orderType": "Market",
             "qty": str(qty),
             "triggerPrice": str(sl_price),
@@ -370,15 +368,15 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
             "positionIdx": 0,
             "triggerDirection": trigger_dir
         }
-        
+
         resp_sl = bybit_post("/v5/order/create", sl_payload)
         print("✅ SL stop order:", resp_sl)
 
-                # === 5. Очистка стопов после закрытия позиции ===
+        # === 5. Очистка стопов после закрытия позиции ===
         def _cleanup_orders():
             try:
                 time.sleep(3)
-                for _ in range(10):  # максимум 10 проверок (примерно 30 секунд)
+                for _ in range(10):  # максимум 10 проверок (~30 секунд)
                     r = requests.get(
                         f"{BYBIT_BASE_URL}/v5/position/list",
                         params={"category": "linear", "symbol": symbol},
@@ -572,7 +570,7 @@ def webhook():
                 print("❌ Trade error (MTF):", e)
         return jsonify({"status": "forwarded"}), 200
 
-    # === 3️⃣ SCALP ===
+# =============== 3️⃣ SCALP (тренд + адаптивный ATR) ===============
     if typ == "SCALP":
         if not SCALP_ENABLED:
             print(f"⏸ SCALP trade disabled by env. {ticker} {direction}")
@@ -580,11 +578,41 @@ def webhook():
     
         if TRADE_ENABLED:
             try:
-                entry_f, stop_f, target_f = float(entry), float(stop), float(target)
+                # === БАЗОВЫЕ НАСТРОЙКИ ===
+                atr_period = 14
+                atr_mult_sl = 0.2
+                atr_mult_tp = 0.7
+                tf = "1m"
     
-                # трендовая торговля: направление совпадает с direction
-                side = "Buy" if direction == "UP" else "Sell"
+                # === НАЧАЛЬНЫЕ ДАННЫЕ ===
+                entry_f = float(entry) if entry else get_last_price(ticker)
+                if not entry_f:
+                    print(f"⚠️ Нет entry и не удалось получить цену для {ticker}")
+                    return jsonify({"status": "error"}), 400
     
+                # === АДАПТИВНЫЙ ATR ===
+                atr = get_atr(ticker, period=atr_period, interval="1")
+                if atr <= 0:
+                    atr = entry_f * 0.002  # запасной ATR
+                    print(f"[ATR warn] {ticker}: fallback ATR {atr:.6f}")
+    
+                # === РАСЧЕТ СТОПА И ТЕЙКА ===
+                if direction == "UP":
+                    stop_f = round(entry_f - atr * atr_mult_sl, 6)
+                    target_f = round(entry_f + atr * atr_mult_tp, 6)
+                    side = "Buy"
+                else:
+                    stop_f = round(entry_f + atr * atr_mult_sl, 6)
+                    target_f = round(entry_f - atr * atr_mult_tp, 6)
+                    side = "Sell"
+    
+                msg = (
+                    f"⚡ SCALP {ticker} {side} | Entry={entry_f:.6f} "
+                    f"Stop={stop_f:.6f} Target={target_f:.6f} (ATR={atr:.6f})"
+                )
+                print(msg)
+    
+                # === ТОРГОВЛЯ ===
                 set_leverage(ticker, 20)
                 qty = calc_qty_from_risk(entry_f, stop_f, MAX_RISK_USDT * 0.5, ticker)
                 if qty <= 0:
@@ -595,10 +623,17 @@ def webhook():
                     ticker, side, qty, target_f, stop_f
                 )
                 print("✅ AUTO-TRADE (SCALP) result:", resp)
+    
                 send_telegram(
-                    f"⚡ *AUTO-TRADE (SCALP)*\n{ticker} {side}\nEntry~{entry}\nTP:{target}\nSL:{stop}"
+                    f"⚡ *AUTO-TRADE (SCALP)*\n"
+                    f"{ticker} {side}\n"
+                    f"Entry~{entry_f}\n"
+                    f"TP:{target_f}\n"
+                    f"SL:{stop_f}\n"
+                    f"ATR:{atr:.6f}"
                 )
-                log_signal(ticker, direction, tf, "SCALP", entry, stop, target)
+    
+                log_signal(ticker, direction, tf, "SCALP", entry_f, stop_f, target_f)
     
             except Exception as e:
                 print("❌ Trade error (SCALP):", e)
@@ -1312,27 +1347,3 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
