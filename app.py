@@ -575,7 +575,7 @@ def webhook():
         if not SCALP_ENABLED:
             print(f"⏸ SCALP trade disabled by env. {ticker} {direction}")
             return jsonify({"status": "paused"}), 200
-    
+
         if TRADE_ENABLED:
             try:
                 # === БАЗОВЫЕ НАСТРОЙКИ ===
@@ -583,20 +583,20 @@ def webhook():
                 atr_mult_sl = 0.2
                 atr_mult_tp = 0.7
                 tf = "1m"
-    
+
                 # === НАЧАЛЬНЫЕ ДАННЫЕ ===
                 entry_f = float(entry) if entry else get_last_price(ticker)
                 if not entry_f:
                     print(f"⚠️ Нет entry и не удалось получить цену для {ticker}")
                     return jsonify({"status": "error"}), 400
-    
+
                 # === АДАПТИВНЫЙ ATR ===
                 atr = get_atr(ticker, period=atr_period, interval="5")
                 if atr <= 0:
                     atr = entry_f * 0.002  # запасной ATR
                     print(f"[ATR warn] {ticker}: fallback ATR {atr:.6f}")
-    
-                # === РАСЧЕТ СТОПА И ТЕЙКА ===
+
+                # === РАСЧЕТ СТОПА, ТЕЙКА и процентов ===
                 if direction == "UP":
                     stop_f = round(entry_f - atr * atr_mult_sl, 6)
                     target_f = round(entry_f + atr * atr_mult_tp, 6)
@@ -605,60 +605,58 @@ def webhook():
                     stop_f = round(entry_f + atr * atr_mult_sl, 6)
                     target_f = round(entry_f - atr * atr_mult_tp, 6)
                     side = "Sell"
-    
+
+                sl_pct = round(abs(stop_f - entry_f) / entry_f * 100, 3)
+                tp_pct = round(abs(target_f - entry_f) / entry_f * 100, 3)
+
                 msg = (
                     f"⚡ SCALP {ticker} {side} | Entry={entry_f:.6f} "
-                    f"Stop={stop_f:.6f} Target={target_f:.6f} (ATR={atr:.6f})"
+                    f"Stop={stop_f:.6f} ({sl_pct}%) Target={target_f:.6f} ({tp_pct}%)"
                 )
                 print(msg)
-    
+
                 # === ТОРГОВЛЯ ===
                 set_leverage(ticker, 20)
                 qty = calc_qty_from_risk(entry_f, stop_f, MAX_RISK_USDT * 0.5, ticker)
                 if qty <= 0:
                     print("⚠️ Qty <= 0 — торговля пропущена")
                     return jsonify({"status": "skipped"}), 200
-    
+
                 resp = place_order_market_with_limit_tp_sl(
                     ticker, side, qty, target_f, stop_f
                 )
                 print("✅ AUTO-TRADE (SCALP) result:", resp)
-    
+
+                # === Принудительная очистка стопов через 15 сек ===
+                def cleanup_orders_force(symbol):
+                    try:
+                        cancel_payload = {"category": "linear", "symbol": symbol}
+                        headers, body = _bybit_sign(cancel_payload)
+                        requests.post(f"{BYBIT_BASE_URL}/v5/order/cancel-all",
+                                      headers=headers, data=body, timeout=5)
+                        print(f"🧹 Forced cleanup for {symbol}")
+                    except Exception as e:
+                        print(f"❌ Forced cleanup error ({symbol}): {e}")
+
+                threading.Thread(
+                    target=lambda: (time.sleep(15), cleanup_orders_force(ticker)),
+                    daemon=True
+                ).start()
+
                 send_telegram(
                     f"⚡ *AUTO-TRADE (SCALP)*\n"
                     f"{ticker} {side}\n"
                     f"Entry~{entry_f}\n"
-                    f"TP:{target_f}\n"
-                    f"SL:{stop_f}\n"
-                    f"ATR:{atr:.6f}"
+                    f"TP:{target_f} ({tp_pct}%)\n"
+                    f"SL:{stop_f} ({sl_pct}%)"
                 )
-    
+
                 log_signal(ticker, direction, tf, "SCALP", entry_f, stop_f, target_f)
-    
+
             except Exception as e:
                 print("❌ Trade error (SCALP):", e)
-    
+
         return jsonify({"status": "forwarded"}), 200
-
-    # === 4️⃣ CLUSTER ===
-    if typ == "CLUSTER":
-        if not CLUSTER_ENABLED:
-            print(f"⏸ CLUSTER trade disabled by env. {ticker} {direction}")
-            log_signal(ticker, direction, tf, "CLUSTER", entry, stop, target)
-            return jsonify({"status": "paused"}), 200
-
-        # при включенном кластере просто добавляем в очередь
-        if ticker and direction in ("UP", "DOWN"):
-            with lock:
-                if tf == VALID_TF_5M:
-                    signals_5m.append((time.time(), ticker, direction, tf))
-                elif tf == VALID_TF_15M:
-                    signals_15m.append((time.time(), ticker, direction, tf))
-                elif tf == VALID_TF_1H:
-                    signals_1h.append((time.time(), ticker, direction, tf))
-            log_signal(ticker, direction, tf, "CLUSTER", entry, stop, target)
-        print(f"ℹ️ CLUSTER signal accepted: {ticker} {direction}")
-        return jsonify({"status": "ok"}), 200
 
     # === 5️⃣ FAIL MODE ===
     if typ == "FAIL":
@@ -1347,4 +1345,5 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
