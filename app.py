@@ -915,8 +915,6 @@ from datetime import datetime, timezone
 
 @app.route("/scalp", methods=["POST"])
 
-@app.route("/scalp", methods=["POST"])
-
 # =============== СКАЛЬПЕР ===============
 def handle_scalp():
     try:
@@ -939,27 +937,25 @@ def handle_scalp():
         if price is None:
             return {"status": "error", "msg": f"❌ Couldn't fetch price for {ticker}"}, 400
 
-        # === АНТИТРЕНД ===
-        # Если тренд UP — входим SHORT, если DOWN — LONG
+        # === ТРЕНДОВАЯ ТОРГОВЛЯ ===
         if direction == "UP":
-            trade_dir = "DOWN"
-            entry = price
-            stop = round(price * (1 + risk_pct / 100), 6)
-            target = round(price * (1 - take_pct / 100), 6)
-        else:
             trade_dir = "UP"
             entry = price
             stop = round(price * (1 - risk_pct / 100), 6)
             target = round(price * (1 + take_pct / 100), 6)
+        else:
+            trade_dir = "DOWN"
+            entry = price
+            stop = round(price * (1 + risk_pct / 100), 6)
+            target = round(price * (1 - take_pct / 100), 6)
 
-        msg = f"💥 SCALP {ticker} {direction}→{trade_dir} {tf} | Entry={entry:.6f} Stop={stop:.6f} Target={target:.6f}"
+        msg = f"⚡ SCALP {ticker} {trade_dir} {tf} | Entry={entry:.6f} Stop={stop:.6f} Target={target:.6f}"
         print(msg)
 
         # лог в файл
         log_signal(ticker, trade_dir, tf, "SCALP", entry, stop, target)
 
         # === ВЕБХУК ===
-        # добавляем поле "type": "SCALP", чтобы /webhook понимал, что это торговый сигнал
         payload = {
             "type": "SCALP",
             "ticker": ticker,
@@ -986,7 +982,6 @@ def handle_scalp():
     except Exception as e:
         print(f"[ERROR scalp] {e}")
         return {"status": "error", "msg": str(e)}, 400
-
 
 def get_last_price(ticker: str):
     """Получаем последнюю цену с Bybit (линейные контракты)"""
@@ -1317,6 +1312,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
