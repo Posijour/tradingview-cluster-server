@@ -371,7 +371,7 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
 
         # === 4. Stop Loss (условный рыночный) ===
         # Автоматическое определение направления и безопасный буфер
-        buffer_mult = 0.001  # 0.1%
+        buffer_mult = 0.0015 if current_price > 1 else 0.003
         if side == "Buy":
             trigger_dir = 1 if sl_price < current_price else 2
             if sl_price >= current_price:
@@ -662,9 +662,20 @@ def webhook():
                     try:
                         cancel_payload = {"category": "linear", "symbol": symbol}
                         headers, body = _bybit_sign(cancel_payload)
-                        requests.post(f"{BYBIT_BASE_URL}/v5/order/cancel-all",
-                                      headers=headers, data=body, timeout=5)
-                        print(f"🧹 Forced cleanup for {symbol}")
+                        resp = requests.post(
+                            f"{BYBIT_BASE_URL}/v5/order/cancel-all",
+                            headers=headers,
+                            data=body,
+                            timeout=8
+                        )
+                        if resp.status_code == 200:
+                            txt = resp.text.strip()
+                            if txt:
+                                print(f"🧹 Forced cleanup OK for {symbol}: {txt[:80]}...")
+                            else:
+                                print(f"⚠️ Cleanup empty response for {symbol}")
+                        else:
+                            print(f"⚠️ Cleanup HTTP {resp.status_code} for {symbol}: {resp.text}")
                     except Exception as e:
                         print(f"❌ Forced cleanup error ({symbol}): {e}")
 
@@ -687,6 +698,7 @@ def webhook():
                 print("❌ Trade error (SCALP):", e)
 
         return jsonify({"status": "forwarded"}), 200
+        
 # === 5️⃣ FAIL MODE ===
     if typ == "FAIL":
         if not FAIL_ENABLED:
@@ -1413,6 +1425,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
