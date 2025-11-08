@@ -1150,7 +1150,7 @@ def dashboard():
 
     return "\n".join(html)
 
-# =============== 📊 /stats (агрегированная статистика) ===============
+# =============== 📊 /stats (агрегированная статистика с TP/SL) ===============
 @app.route("/stats")
 def stats():
     if not os.path.exists(LOG_FILE):
@@ -1172,90 +1172,95 @@ def stats():
                 entry  = float(r[5]) if len(r) > 5 and r[5] else None
                 stop   = float(r[6]) if len(r) > 6 and r[6] else None
                 target = float(r[7]) if len(r) > 7 and r[7] else None
-                parsed.append((ts, ticker, direction, tf, typ, entry, stop, target))
+                result = r[8] if len(r) > 8 else None
+                parsed.append((ts, ticker, direction, tf, typ, entry, stop, target, result))
             except Exception:
                 continue
 
-        now = datetime.utcnow()
-        last_24h = now - timedelta(hours=24)
-        last_7d  = now - timedelta(days=7)
+        if not parsed:
+            return "<h3>⚠️ Лог пуст или повреждён</h3>", 200
 
-        total         = len(parsed)
-        total_24h     = sum(1 for x in parsed if x[0] >= last_24h)
-        mtf_count     = sum(1 for x in parsed if x[4] == "MTF")
-        cluster_count = sum(1 for x in parsed if x[4] == "CLUSTER")
-        up_count      = sum(1 for x in parsed if x[2] == "UP")
-        down_count    = sum(1 for x in parsed if x[2] == "DOWN")
+        # фильтруем только реальные сделки (SCALP/MTF/FAIL)
+        trades = [x for x in parsed if x[4] in ("SCALP", "MTF", "FAIL")]
 
-        with_prices = [x for x in parsed if x[5] and x[6] and x[7]]
-        avg_entry  = sum(x[5] for x in with_prices) / len(with_prices) if with_prices else 0
-        avg_stop   = sum(x[6] for x in with_prices) / len(with_prices) if with_prices else 0
-        avg_target = sum(x[7] for x in with_prices) / len(with_prices) if with_prices else 0
+        total = len(trades)
+        if total == 0:
+            return "<h3>⚠️ Нет торговых записей</h3>", 200
 
-        last_signals = with_prices[-10:]
-        last_rows_html = "".join(
-            f"<tr>"
-            f"<td>{html_esc(x[0].strftime('%Y-%m-%d %H:%M'))}</td>"
-            f"<td>{html_esc(x[1])}</td>"
-            f"<td>{html_esc(x[2])}</td>"
-            f"<td>{x[5]}</td>"
-            f"<td>{x[6]}</td>"
-            f"<td>{x[7]}</td>"
-            f"<td>{html_esc(x[4])}</td>"
-            f"</tr>"
-            for x in reversed(last_signals)
-        )
+        # считаем успешные
+        success = sum(1 for x in trades if x[8] == "TP")
+        fail = sum(1 for x in trades if x[8] == "SL")
+        unknown = total - success - fail
 
-        daily = defaultdict(lambda: {"MTF":0, "CLUSTER":0})
-        for ts, _, _, _, typ, *_ in parsed:
-            if ts >= last_7d:
-                key = ts.date().isoformat()
-                if typ in ("MTF","CLUSTER"):
-                    daily[key][typ] += 1
+        winrate = round(success / total * 100, 2) if total > 0 else 0.0
 
-        daily_html = "".join(
-            f"<tr>"
-            f"<td>{html_esc(d)}</td>"
-            f"<td>{v['MTF']}</td>"
-            f"<td>{v['CLUSTER']}</td>"
-            f"</tr>"
-            for d, v in sorted(daily.items())
-        )
+        # разбивка по направлению
+        long_trades = [x for x in trades if x[2] == "UP"]
+        short_trades = [x for x in trades if x[2] == "DOWN"]
+
+        long_win = sum(1 for x in long_trades if x[8] == "TP")
+        short_win = sum(1 for x in short_trades if x[8] == "TP")
+
+        long_rate = round(long_win / len(long_trades) * 100, 2) if long_trades else 0.0
+        short_rate = round(short_win / len(short_trades) * 100, 2) if short_trades else 0.0
+
+        # разбивка по тикерам
+        per_ticker = {}
+        for x in trades:
+            t = x[1]
+            res = x[8]
+            per_ticker.setdefault(t, {"total": 0, "tp": 0, "sl": 0})
+            per_ticker[t]["total"] += 1
+            if res == "TP":
+                per_ticker[t]["tp"] += 1
+            elif res == "SL":
+                per_ticker[t]["sl"] += 1
+
+        # таблица по тикерам
+        ticker_rows = ""
+        for t, v in sorted(per_ticker.items()):
+            total_t = v["total"]
+            tp = v["tp"]
+            sl = v["sl"]
+            rate = round(tp / total_t * 100, 2) if total_t > 0 else 0.0
+            ticker_rows += (
+                f"<tr>"
+                f"<td>{html_esc(t)}</td>"
+                f"<td>{total_t}</td>"
+                f"<td>{tp}</td>"
+                f"<td>{sl}</td>"
+                f"<td>{rate}%</td>"
+                f"</tr>"
+            )
 
         html = f"""
-        <h2>📊 TradingView Signals Stats (7d)</h2>
+        <h2>📊 Trade Stats (с TP/SL результатами)</h2>
         <ul>
-          <li>Всего сигналов: <b>{total}</b></li>
-          <li>За 24 часа: <b>{total_24h}</b></li>
-          <li>MTF: <b>{mtf_count}</b> | Cluster: <b>{cluster_count}</b></li>
-          <li>Направление — 🟢 UP: <b>{up_count}</b> | 🔴 DOWN: <b>{down_count}</b></li>
+          <li>Всего сделок: <b>{total}</b></li>
+          <li>Успешных (TP): <b>{success}</b></li>
+          <li>Неудачных (SL): <b>{fail}</b></li>
+          <li>Неизвестных: <b>{unknown}</b></li>
+          <li>Winrate общий: <b>{winrate}%</b></li>
         </ul>
 
-        <h3>📈 Средние цены сигналов</h3>
+        <h3>📈 Разбивка по направлению</h3>
         <ul>
-          <li>Entry: <b>{avg_entry:.2f}</b></li>
-          <li>Stop: <b>{avg_stop:.2f}</b></li>
-          <li>Target: <b>{avg_target:.2f}</b></li>
+          <li>🟢 LONG (UP): {len(long_trades)} | TP {long_win} | Winrate {long_rate}%</li>
+          <li>🔴 SHORT (DOWN): {len(short_trades)} | TP {short_win} | Winrate {short_rate}%</li>
         </ul>
 
-        <h3>🕒 Последние 10 сигналов</h3>
+        <h3>💎 По тикерам</h3>
         <table border="1" cellpadding="4">
-          <tr><th>Время (UTC)</th><th>Тикер</th><th>Направление</th><th>Entry</th><th>Stop</th><th>Target</th><th>Тип</th></tr>
-          {last_rows_html if last_rows_html else '<tr><td colspan="7">Нет сигналов</td></tr>'}
+          <tr><th>Ticker</th><th>Всего</th><th>TP</th><th>SL</th><th>Winrate</th></tr>
+          {ticker_rows if ticker_rows else '<tr><td colspan="5">Нет данных</td></tr>'}
         </table>
 
-        <h4>📅 По дням (последние 7):</h4>
-        <table border="1" cellpadding="4">
-          <tr><th>Дата (UTC)</th><th>MTF</th><th>CLUSTER</th></tr>
-          {daily_html if daily_html else '<tr><td colspan="3">Нет данных</td></tr>'}
-        </table>
-
-        <p style='color:gray'>Обновлено: {html_esc(now.strftime("%H:%M:%S UTC"))}</p>
+        <p style='color:gray'>Обновлено: {html_esc(datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC'))}</p>
         """
         return html, 200
 
     except Exception as e:
-        return f"<h3>❌ Ошибка анализа: {html_esc(e)}</h3>", 500
+        return f"<h3>❌ Ошибка статистики: {html_esc(e)}</h3>", 500
 
 @app.route("/performance")
 def performance():
@@ -1400,6 +1405,7 @@ def root():
 @app.route("/health")
 def health():
     return "OK", 200
+    
 def monitor_closed_trades():
     """
     🔍 Мониторинг Bybit: ищет закрытые сделки и записывает результат (TP/SL) в лог.
@@ -1535,6 +1541,7 @@ if __name__ == "__main__":
 
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
