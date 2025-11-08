@@ -588,34 +588,44 @@ def webhook():
 
     if TRADE_ENABLED:
         try:
+            # === БАЗОВЫЕ НАСТРОЙКИ ===
             atr_period = 14
             tf = "1m"
-            target_sl_pct = 0.0025
-            rr_ratio = 3.0
+            target_sl_pct = 0.0025  # желаемый стоп около 0.25%
+            rr_ratio = 3.0          # тейк в 3 раза больше стопа
 
+            # === ПОЛУЧАЕМ ЦЕНУ ВХОДА ===
             entry_f = float(entry) if entry else get_last_price(ticker)
             if not entry_f:
                 print(f"⚠️ Нет entry и не удалось получить цену для {ticker}")
                 return jsonify({"status": "error"}), 400
 
+            # === ATR ===
             atr = get_atr(ticker, period=atr_period, interval="5")
             if atr <= 0:
-                atr = entry_f * 0.002
+                atr = entry_f * 0.002  # fallback, если не удалось получить ATR
                 print(f"[ATR warn] {ticker}: fallback ATR {atr:.6f}")
 
+            # === Расчёт стопа и тейка ===
             atr_rel = atr / entry_f
-            atr_mult_sl = target_sl_pct / atr_rel
+            atr_mult_sl = target_sl_pct / max(atr_rel, 1e-6)
             atr_mult_tp = atr_mult_sl * rr_ratio
 
+            stop_atr = atr * atr_mult_sl
+            stop_min = entry_f * 0.002  # минимум 0.2%
+            stop_size = max(stop_atr, stop_min)
+            take_size = stop_size * rr_ratio
+
             if direction == "UP":
-                stop_f = round(entry_f - atr * atr_mult_sl, 6)
-                target_f = round(entry_f + atr * atr_mult_tp, 6)
+                stop_f = round(entry_f - stop_size, 6)
+                target_f = round(entry_f + take_size, 6)
                 side = "Buy"
             else:
-                stop_f = round(entry_f + atr * atr_mult_sl, 6)
-                target_f = round(entry_f - atr * atr_mult_tp, 6)
+                stop_f = round(entry_f + stop_size, 6)
+                target_f = round(entry_f - take_size, 6)
                 side = "Sell"
 
+            # === проценты ===
             sl_pct = round(abs((entry_f - stop_f) / entry_f) * 100, 3)
             tp_pct = round(abs((target_f - entry_f) / entry_f) * 100, 3)
 
@@ -626,6 +636,7 @@ def webhook():
             )
             print(msg)
 
+            # === торговля ===
             set_leverage(ticker, 20)
             qty = calc_qty_from_risk(entry_f, stop_f, MAX_RISK_USDT * 0.5, ticker)
             if qty <= 0:
@@ -635,6 +646,7 @@ def webhook():
             resp = place_order_market_with_limit_tp_sl(ticker, side, qty, target_f, stop_f)
             print("✅ AUTO-TRADE (SCALP) result:", resp)
 
+            # === уведомление ===
             send_telegram(
                 f"⚡ *AUTO-TRADE (SCALP)*\n"
                 f"{ticker} {side}\n"
@@ -1523,6 +1535,7 @@ if __name__ == "__main__":
 
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
