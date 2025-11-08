@@ -768,7 +768,7 @@ def cluster_worker_15m():
                     log_signal(",".join(sorted(list(downs))), "DOWN", VALID_TF_15M, "CLUSTER")
                     last_cluster_sent_15m["DOWN"] = now
                 else:
-                    print("[COOLDOWN] skip DOWN cluster notify"])
+                    print("[COOLDOWN] skip DOWN cluster notify")
 
             if TRADE_ENABLED:
                 try:
@@ -1313,3 +1313,4 @@ if __name__ == "__main__":
 
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
