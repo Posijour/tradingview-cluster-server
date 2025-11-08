@@ -344,11 +344,14 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
         time.sleep(1)
         for attempt in range(10):
             try:
-                r = requests.get(
+                resp = requests.get(
                     f"{BYBIT_BASE_URL}/v5/position/list",
                     params={"category": "linear", "symbol": symbol},
                     timeout=5
-                ).json()
+                )
+                if resp.status_code != 200 or not resp.text.strip():
+                    raise ValueError(f"empty response ({resp.status_code})")
+                r = resp.json()
                 pos_list = ((r.get("result") or {}).get("list") or [])
                 open_size = sum(abs(float(p.get("size", 0))) for p in pos_list if p.get("symbol") == symbol)
                 if open_size > 0:
@@ -1313,4 +1316,5 @@ if __name__ == "__main__":
 
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
