@@ -94,11 +94,9 @@ tg_times = deque(maxlen=20)
 
 MD_ESCAPE = re.compile(r'([_*\[\]()~`>#+\-=|{}.!])')
 def md_escape(text: str) -> str:
-    # телеграм-вечный ад: экранировать markdownv2
     return MD_ESCAPE.sub(r'\\\1', text)
 
 def html_esc(x):
-    # для html-дэшбордов
     return _html.escape(str(x), quote=True)
 
 # =============== 🔐 Верификация подписи (используется в /simulate) ===============
@@ -111,11 +109,6 @@ tg_times = deque(maxlen=20)
 tg_times_5m = deque(maxlen=20)  # отдельный буфер для 5m уведомлений
 
 def send_telegram(text: str, channel: str = "default"):
-    """
-    Отправляет сообщение в Telegram с раздельным антифлудом:
-    - 'default' — обычные уведомления, MTF, 15m кластеры и т.п.
-    - '1h' — часовые кластеры, не блокируются другими потоками.
-    """
     if not TELEGRAM_TOKEN or not CHAT_ID:
         print("⚠️ Telegram credentials missing.")
         return
@@ -124,17 +117,14 @@ def send_telegram(text: str, channel: str = "default"):
 
     def _send_with_rate_limit():
         try:
-            # выбираем буфер по каналу
             tg_queue = tg_times_5m if channel == "5m" else tg_times
 
             now = monotonic()
             tg_queue.append(now)
 
-            # не чаще 1 сообщения/сек для данного канала
             if len(tg_queue) >= 2 and now - tg_queue[-2] < 1.0:
                 time.sleep(1.0 - (now - tg_queue[-2]))
 
-            # и не более 20 сообщений за минуту в этом канале
             if len(tg_queue) == tg_queue.maxlen and now - tg_queue[0] < 60:
                 time.sleep(60 - (now - tg_queue[0]))
 
@@ -150,9 +140,6 @@ def send_telegram(text: str, channel: str = "default"):
     threading.Thread(target=_send_with_rate_limit, daemon=True).start()
 
 def send_telegram_document(filepath: str, caption: str = ""):
-    """
-    Отправка файла (CSV) в Telegram. Используется воркером бэкапа.
-    """
     if not TELEGRAM_TOKEN or not CHAT_ID:
         print("⚠️ Telegram credentials missing.")
         return False
@@ -161,7 +148,6 @@ def send_telegram_document(filepath: str, caption: str = ""):
             print(f"⚠️ Document not found: {filepath}")
             return False
 
-        # Telegram лимит ~50 МБ
         size_mb = os.path.getsize(filepath) / (1024 * 1024)
         if size_mb > 49.5:
             print(f"⚠️ File too large for Telegram: {size_mb:.1f} MB")
@@ -169,7 +155,7 @@ def send_telegram_document(filepath: str, caption: str = ""):
 
         with open(filepath, "rb") as f:
             files = {"document": (os.path.basename(filepath), f)}
-            data = {"chat_id": CHAT_ID, "caption": caption[:1024]}  # caption ≤ 1024 символов
+            data = {"chat_id": CHAT_ID, "caption": caption[:1024]}
             r = requests.post(
                 f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument",
                 data=data,
@@ -225,10 +211,6 @@ def bybit_post(path: str, payload: dict) -> dict:
 import math
 
 def _decimals_from_step(step_str: str) -> int:
-    """
-    Определяет, сколько знаков после запятой нужно оставить,
-    исходя из шага qtyStep. Корректно работает даже с 1e-3.
-    """
     s = str(step_str)
     if "e" in s or "E" in s:
         try:
@@ -240,10 +222,6 @@ def _decimals_from_step(step_str: str) -> int:
     return 0
 
 def normalize_qty(symbol: str, qty: float) -> float:
-    """
-    Нормализует количество до минимального шага Bybit (qtyStep).
-    Учитывает minOrderQty и корректно округляет вниз.
-    """
     try:
         r = requests.get(
             f"{BYBIT_BASE_URL}/v5/market/instruments-info",
@@ -267,11 +245,6 @@ def normalize_qty(symbol: str, qty: float) -> float:
         return float(f"{qty:.6f}")
 
 def calc_qty_from_risk(entry: float, stop: float, risk_usdt: float, symbol: str) -> float:
-    """
-    Возвращает количество контрактов под риск в USDT.
-    Жёстко фильтрует нули/NaN/inf, не даёт отрицательных значений,
-    перед нормализацией приводит всё к float.
-    """
     try:
         entry = float(entry)
         stop = float(stop)
@@ -297,9 +270,6 @@ def calc_qty_from_risk(entry: float, stop: float, risk_usdt: float, symbol: str)
     return qty
 
 def set_leverage(symbol, leverage):
-    """
-    Устанавливает плечо на Bybit (оба направления).
-    """
     try:
         payload = {
             "category": "linear",
@@ -320,12 +290,40 @@ def set_leverage(symbol, leverage):
     except Exception as e:
         print("❌ Leverage set exception:", e)
 
+# === мониторинг и умная чистка «осиротевших» ордеров ===
+def monitor_and_cleanup(symbol, check_every=5, max_checks=120):
+    """
+    Следит за позицией. Как только позиция по symbol закрыта, удаляет все оставшиеся ордера.
+    Защищает от повторного открытия после TP из-за висящего условного SL.
+    """
+    try:
+        for _ in range(max_checks):
+            time.sleep(check_every)
+            r = requests.get(
+                f"{BYBIT_BASE_URL}/v5/position/list",
+                params={"category": "linear", "symbol": symbol},
+                timeout=5
+            ).json()
+            pos_list = ((r.get("result") or {}).get("list") or [])
+            size = sum(abs(float(p.get("size", 0))) for p in pos_list if p.get("symbol") == symbol)
+            if size == 0:
+                cancel_payload = {"category": "linear", "symbol": symbol}
+                headers, body = _bybit_sign(cancel_payload)
+                requests.post(f"{BYBIT_BASE_URL}/v5/order/cancel-all",
+                              headers=headers, data=body, timeout=5)
+                print(f"🧹 Cleanup: position closed, orders canceled for {symbol}")
+                return
+        print(f"⏳ Cleanup monitor ended for {symbol} (position still open)")
+    except Exception as e:
+        print(f"❌ monitor_and_cleanup error ({symbol}): {e}")
+
 def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_price: float, sl_price: float):
     """
     Открывает рыночную позицию и ставит лимитный TP и условный SL.
     Исправлены ошибки Bybit:
     - TP: timeInForce -> PostOnly
     - SL: корректная логика triggerDirection (Buy=2, Sell=1)
+    Также запускает монитор, который удалит «осиротевшие» ордера после закрытия позиции.
     """
     try:
         print(f"\n🚀 === NEW TRADE START {symbol} {side} qty={qty} ===")
@@ -390,7 +388,7 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
             "qty": str(qty),
             "price": str(tp_safe),
             "reduceOnly": True,
-            "timeInForce": "PostOnly"  # исправлено
+            "timeInForce": "PostOnly"
         }
         print("📦 TP payload:", tp_payload)
         resp_tp = bybit_post("/v5/order/create", tp_payload)
@@ -434,6 +432,9 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
 
         print(f"✅ TP/SL placed successfully for {symbol}")
 
+        # === 6. Старт мониторинга для умной очистки ===
+        threading.Thread(target=monitor_and_cleanup, args=(symbol,), daemon=True).start()
+
         return {"entry": resp_open, "tp": resp_tp, "sl": resp_sl}
 
     except Exception as e:
@@ -441,10 +442,6 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
         return None
 
 def get_atr(symbol: str, period: int = 14, interval: str = "15", limit: int = 100) -> float:
-    """
-    ATR по реальным свечам Bybit.
-    Bybit даёт свечи newest-first, мы пересортировываем по времени по возрастанию.
-    """
     try:
         url = f"{BYBIT_BASE_URL}/v5/market/kline"
         params = {"category": "linear", "symbol": symbol, "interval": interval, "limit": limit}
@@ -453,7 +450,6 @@ def get_atr(symbol: str, period: int = 14, interval: str = "15", limit: int = 10
         if not candles:
             return 0.0
 
-        # сортируем по timestamp (поле [0])
         candles.sort(key=lambda c: int(c[0]))
 
         highs  = [float(c[2]) for c in candles]
@@ -480,19 +476,6 @@ def get_atr(symbol: str, period: int = 14, interval: str = "15", limit: int = 10
 
 # =============== 🔍 ПАРСЕР ВХОДЯЩЕГО PAYLOAD ===============
 def parse_payload(req) -> dict:
-    """
-    Поддерживает ТВОЙ текщий формат Pine:
-    {
-      "type":"MTF",
-      "ticker":"BYBIT:BTCUSDT.P",
-      "direction":"UP"|"DOWN",
-      "entry":12345,
-      "stop":12300,
-      "target":12400,
-      "message":"строка для телеги"
-      // tf иногда есть, иногда нет
-    }
-    """
     data = request.get_json(silent=True) or {}
     if not data:
         try:
@@ -500,8 +483,6 @@ def parse_payload(req) -> dict:
         except Exception:
             data = {}
 
-    # Приводим тикер в формат для Bybit:
-    # "BYBIT:BTCUSDT.P" -> "BTCUSDT"
     ticker_clean = (
         data.get("ticker","")
         .replace("BYBIT:", "")
@@ -513,7 +494,7 @@ def parse_payload(req) -> dict:
         "type":      str(data.get("type", "")).upper(),
         "ticker":    ticker_clean,
         "direction": str(data.get("direction", "")).upper(),
-        "tf":        str(data.get("tf", "15m")).lower(),  # если tf не пришёл из Pine, считаем что 15m
+        "tf":        str(data.get("tf", "15m")).lower(),
         "message":   data.get("message", ""),
         "entry":     data.get("entry"),
         "stop":      data.get("stop"),
@@ -523,7 +504,6 @@ def parse_payload(req) -> dict:
 # =============== 🔔 ВЕБХУК ОТ TRADINGVIEW (MTF / SCALP / CLUSTER / FAIL) ===============
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    # простейшая защита url ?key=SECRET
     if WEBHOOK_SECRET:
         key = request.args.get("key", "")
         if key != WEBHOOK_SECRET:
@@ -539,13 +519,11 @@ def webhook():
     stop       = payload.get("stop")
     target     = payload.get("target")
 
-    # === флаги окружения ===
     MTF_ENABLED     = os.getenv("MTF_ENABLED", "false").lower() == "true"
     CLUSTER_ENABLED = os.getenv("CLUSTER_ENABLED", "false").lower() == "true"
     SCALP_ENABLED   = os.getenv("SCALP_ENABLED", "false").lower() == "true"
     FAIL_ENABLED    = os.getenv("FAIL_ENABLED", "false").lower() == "true"
 
-    # --- антидубликат (3 мин по типу+тикеру+направлению+tf) ---
     global last_signals
     now = time.time()
     sig_id = f"{typ}_{ticker}_{direction}_{tf}"
@@ -554,7 +532,6 @@ def webhook():
         return jsonify({"status": "duplicate"}), 200
     last_signals[sig_id] = now
 
-    # === 1️⃣ Базовая логика: Telegram, очереди, логирование ===
     if msg:
         MAX_SIGNAL_AGE_SEC = 3600
         signal_time = float(payload.get("time", time.time()))
@@ -566,7 +543,6 @@ def webhook():
             send_telegram(msg)
             print(f"📨 Forwarded alert: {ticker} {direction}")
 
-        # === Кладём сигнал в очереди ТОЛЬКО если кластеры включены ===
         if CLUSTER_ENABLED and ticker and direction in ("UP", "DOWN"):
             with lock:
                 if tf == VALID_TF_5M:
@@ -579,11 +555,9 @@ def webhook():
                     signals_1h.append((time.time(), ticker, direction, tf))
                     print(f"[WH] queued {ticker} {direction} ({tf}) for 1h cluster window")
 
-        # логируем только если не SCALP (чтобы не было дублей)
         if typ != "SCALP":
             log_signal(ticker, direction, tf, typ or "WEBHOOK", entry, stop, target)
 
-    # === 2️⃣ MTF ===
     if typ == "MTF":
         if not MTF_ENABLED:
             print(f"⏸ MTF trade disabled by env. {ticker} {direction}")
@@ -611,30 +585,25 @@ def webhook():
 
     if TRADE_ENABLED:
         try:
-            # === БАЗОВЫЕ НАСТРОЙКИ ===
             atr_period = 14
             tf = "1m"
-            target_sl_pct = 0.0025  # хотим стоп около 0.25%
-            rr_ratio = 3.0          # R:R = 3:1
+            target_sl_pct = 0.0025
+            rr_ratio = 3.0
 
-            # === НАЧАЛЬНЫЕ ДАННЫЕ ===
             entry_f = float(entry) if entry else get_last_price(ticker)
             if not entry_f:
                 print(f"⚠️ Нет entry и не удалось получить цену для {ticker}")
                 return jsonify({"status": "error"}), 400
 
-            # === АДАПТИВНЫЙ ATR ===
             atr = get_atr(ticker, period=atr_period, interval="5")
             if atr <= 0:
-                atr = entry_f * 0.002  # запасной ATR
+                atr = entry_f * 0.002
                 print(f"[ATR warn] {ticker}: fallback ATR {atr:.6f}")
 
-            # === АДАПТИВНЫЙ МНОЖИТЕЛЬ (нормализация ATR под 0.25%) ===
-            atr_rel = atr / entry_f  # ATR в долях цены
+            atr_rel = atr / entry_f
             atr_mult_sl = target_sl_pct / atr_rel
             atr_mult_tp = atr_mult_sl * rr_ratio
 
-            # === РАСЧЁТ СТОПА И ТЕЙКА ===
             if direction == "UP":
                 stop_f = round(entry_f - atr * atr_mult_sl, 6)
                 target_f = round(entry_f + atr * atr_mult_tp, 6)
@@ -644,7 +613,6 @@ def webhook():
                 target_f = round(entry_f - atr * atr_mult_tp, 6)
                 side = "Sell"
 
-            # === ПРОЦЕНТНЫЕ ВЕЛИЧИНЫ SL/TP ===
             sl_pct = round(abs((entry_f - stop_f) / entry_f) * 100, 3)
             tp_pct = round(abs((target_f - entry_f) / entry_f) * 100, 3)
 
@@ -655,7 +623,6 @@ def webhook():
             )
             print(msg)
 
-            # === ТОРГОВЛЯ ===
             set_leverage(ticker, 20)
             qty = calc_qty_from_risk(entry_f, stop_f, MAX_RISK_USDT * 0.5, ticker)
             if qty <= 0:
@@ -665,7 +632,6 @@ def webhook():
             resp = place_order_market_with_limit_tp_sl(ticker, side, qty, target_f, stop_f)
             print("✅ AUTO-TRADE (SCALP) result:", resp)
 
-            # === ОПОВЕЩЕНИЕ В TG ===
             send_telegram(
                 f"⚡ *AUTO-TRADE (SCALP)*\n"
                 f"{ticker} {side}\n"
@@ -673,22 +639,6 @@ def webhook():
                 f"TP:{target_f} ({tp_pct}%)\n"
                 f"SL:{stop_f} ({sl_pct}%)"
             )
-
-            # === Принудительная очистка стопов через 15 сек ===
-            def cleanup_orders_force(symbol):
-                try:
-                    cancel_payload = {"category": "linear", "symbol": symbol}
-                    headers, body = _bybit_sign(cancel_payload)
-                    requests.post(f"{BYBIT_BASE_URL}/v5/order/cancel-all",
-                                  headers=headers, data=body, timeout=5)
-                    print(f"🧹 Forced cleanup for {symbol}")
-                except Exception as e:
-                    print(f"❌ Forced cleanup error ({symbol}): {e}")
-
-            threading.Thread(
-                target=lambda: (time.sleep(15), cleanup_orders_force(ticker)),
-                daemon=True
-            ).start()
 
             log_signal(ticker, direction, tf, "SCALP", entry_f, stop_f, target_f)
 
@@ -720,27 +670,6 @@ def webhook():
                 )
                 print("✅ AUTO-TRADE (FAIL MODE) result:", resp)
 
-                # === Принудительная очистка стопов через 15 сек ===
-                def cleanup_orders_force(symbol):
-                    try:
-                        cancel_payload = {"category": "linear", "symbol": symbol}
-                        headers, body = _bybit_sign(cancel_payload)
-                        requests.post(
-                            f"{BYBIT_BASE_URL}/v5/order/cancel-all",
-                            headers=headers,
-                            data=body,
-                            timeout=5
-                        )
-                        print(f"🧹 Forced cleanup for {symbol}")
-                    except Exception as e:
-                        print(f"❌ Forced cleanup error ({symbol}): {e}")
-
-                threading.Thread(
-                    target=lambda: (time.sleep(15), cleanup_orders_force(ticker)),
-                    daemon=True
-                ).start()
-
-                # === Telegram уведомление ===
                 sl_pct = round(abs(stop_f - entry_f) / entry_f * 100, 3)
                 tp_pct = round(abs(target_f - entry_f) / entry_f * 100, 3)
 
@@ -760,7 +689,6 @@ def webhook():
 
         return jsonify({"status": "ok"}), 200
 
-    # === 6️⃣ fallback: кластеры без message ===
     if typ == "CLUSTER" and CLUSTER_ENABLED and tf in (VALID_TF_5M, VALID_TF_15M, VALID_TF_1H):
         if ticker and direction in ("UP", "DOWN"):
             with lock:
@@ -776,7 +704,6 @@ def webhook():
             log_signal(ticker, direction, tf, "CLUSTER", entry, stop, target)
             return jsonify({"status": "ok"}), 200
 
-    # === 7️⃣ fallback общий ===
     return jsonify({"status": "ignored"}), 200
 
 # =============== 🧠 КЛАСТЕР-ВОРКЕР 15M ===============
@@ -789,7 +716,6 @@ def cluster_worker_15m():
             now = time.time()
             cutoff = now - CLUSTER_WINDOW_MIN * 60
 
-            # --- снапшот очереди + чистка старья ---
             with lock:
                 while signals_15m and signals_15m[0][0] < cutoff:
                     signals_15m.popleft()
@@ -800,7 +726,6 @@ def cluster_worker_15m():
                 time.sleep(CHECK_INTERVAL_SEC)
                 continue
 
-            # --- отладка ---
             try:
                 tickers_dbg = [s[1] for s in snapshot]
                 dirs_dbg = [s[2] for s in snapshot]
@@ -811,7 +736,6 @@ def cluster_worker_15m():
             except Exception:
                 pass
 
-            # --- считаем апы/дауны из снапшота ---
             ups, downs, tickers_seen = set(), set(), set()
             for (_, t, d, _) in snapshot:
                 tickers_seen.add(t)
@@ -822,7 +746,6 @@ def cluster_worker_15m():
 
             print(f"[15m][DEBUG] total={sig_count}, ups={len(ups)}, downs={len(downs)}")
 
-            # --- уведомления о кластерах ---
             if len(ups) >= CLUSTER_THRESHOLD:
                 if now - last_cluster_sent_15m["UP"] > CLUSTER_WINDOW_MIN * 60:
                     send_telegram(
@@ -845,9 +768,8 @@ def cluster_worker_15m():
                     log_signal(",".join(sorted(list(downs))), "DOWN", VALID_TF_15M, "CLUSTER")
                     last_cluster_sent_15m["DOWN"] = now
                 else:
-                    print("[COOLDOWN] skip DOWN cluster notify")
+                    print("[COOLDOWN] skip DOWN cluster notify"])
 
-            # --- автоторговля по кластерам (15m) ---
             if TRADE_ENABLED:
                 try:
                     direction, ticker = None, None
@@ -872,12 +794,10 @@ def cluster_worker_15m():
                     if not direction:
                         continue
 
-                    # кулдаун
                     if now - last_cluster_trade[direction] < CLUSTER_COOLDOWN_SEC:
                         print(f"[COOLDOWN] Skipping {direction} trade — waiting cooldown.")
                         continue
 
-                    # === локальная проверка волатильности тикера и адаптация риска ===
                     atr_val_local = get_atr(ticker, period=14, interval="15")
                     atr_base_local = get_atr(ticker, period=100, interval="15")
                     ratio_local = atr_val_local / max(atr_base_local, 0.0001)
@@ -899,12 +819,10 @@ def cluster_worker_15m():
 
                     last_cluster_trade[direction] = now
 
-                    # белый список
                     if SYMBOL_WHITELIST and ticker not in SYMBOL_WHITELIST:
                         print(f"⛔ {ticker} вне белого списка — пропуск")
                         continue
 
-                    # цена входа
                     resp = requests.get(
                         f"{BYBIT_BASE_URL}/v5/market/tickers",
                         params={"category": "linear", "symbol": ticker},
@@ -912,7 +830,6 @@ def cluster_worker_15m():
                     ).json()
                     entry_price = float(resp["result"]["list"][0]["lastPrice"])
 
-                    # === Волатильность и адаптивный масштаб ===
                     atr_val = get_atr(ticker, period=14, interval="15")
                     atr_base = get_atr(ticker, period=100, interval="15")
 
@@ -927,7 +844,6 @@ def cluster_worker_15m():
                     target_price = entry_price - rr_target if direction == "UP" else entry_price + rr_target
                     side = "Sell" if direction == "UP" else "Buy"
 
-                    # === расчет количества с учетом адаптивного риска ===
                     set_leverage(ticker, LEVERAGE)
                     effective_risk_usdt = MAX_RISK_USDT * risk_factor
                     qty = calc_qty_from_risk(entry_price, stop_price, effective_risk_usdt, ticker)
@@ -966,7 +882,6 @@ def cluster_worker_5m():
             now = time.time()
             cutoff = now - CLUSTER_WINDOW_5M_MIN * 60
 
-            # --- берём только сигналы 5m
             with lock:
                 while signals_5m and signals_5m[0][0] < cutoff:
                     signals_5m.popleft()
@@ -986,7 +901,6 @@ def cluster_worker_5m():
 
             print(f"[5M DEBUG] signals={len(snapshot)}, ups={len(ups)}, downs={len(downs)}")
 
-            # === 🟢 UP ===
             if len(ups) >= CLUSTER_THRESHOLD:
                 same_composition = ups == last_cluster_composition["UP"]
                 if (now - last_cluster_sent_5m["UP"] > CLUSTER_5M_COOLDOWN_SEC) and not same_composition:
@@ -1002,7 +916,6 @@ def cluster_worker_5m():
                 else:
                     print("[5M COOL] skip UP cluster notify")
             
-            # === 🔴 DOWN ===
             if len(downs) >= CLUSTER_THRESHOLD:
                 same_composition = downs == last_cluster_composition["DOWN"]
                 if (now - last_cluster_sent_5m["DOWN"] > CLUSTER_5M_COOLDOWN_SEC) and not same_composition:
@@ -1037,18 +950,15 @@ def handle_scalp():
         if not ticker or direction not in ["UP", "DOWN"]:
             return {"status": "error", "msg": f"❌ Invalid request: {data}"}, 400
 
-        # === НАСТРОЙКИ ===
-        risk_pct = 0.2      # риск (стоп)
-        take_pct = 0.7      # профит
+        risk_pct = 0.2
+        take_pct = 0.7
         leverage = 20
         api_key = "gloryglorymanunited"
 
-        # === ЦЕНА С БИРЖИ ===
         price = get_last_price(ticker)
         if price is None:
             return {"status": "error", "msg": f"❌ Couldn't fetch price for {ticker}"}, 400
 
-        # === ТРЕНДОВАЯ ТОРГОВЛЯ ===
         if direction == "UP":
             trade_dir = "UP"
             entry = price
@@ -1063,10 +973,8 @@ def handle_scalp():
         msg = f"⚡ SCALP {ticker} {trade_dir} {tf} | Entry={entry:.6f} Stop={stop:.6f} Target={target:.6f}"
         print(msg)
 
-        # лог в файл
         log_signal(ticker, trade_dir, tf, "SCALP", entry, stop, target)
 
-        # === ВЕБХУК ===
         payload = {
             "type": "SCALP",
             "ticker": ticker,
@@ -1095,7 +1003,6 @@ def handle_scalp():
         return {"status": "error", "msg": str(e)}, 400
 
 def get_last_price(ticker: str):
-    """Получаем последнюю цену с Bybit (линейные контракты)"""
     try:
         import requests
         url = f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={ticker}"
@@ -1109,11 +1016,6 @@ def get_last_price(ticker: str):
 
 # =============== ВОРКЕР БЕКАПА ===============
 def backup_log_worker():
-    """
-    Раз в BACKUP_INTERVAL_MIN минут шлёт файл signals_log.csv в Телеграм.
-    Если BACKUP_ONLY_IF_GROWS=true — шлёт только если размер файла увеличился
-    с последнего раза (защита от спама одинаковыми копиями).
-    """
     if not BACKUP_ENABLED:
         print("ℹ️ Backup disabled by BACKUP_ENABLED=false")
         return
@@ -1146,7 +1048,7 @@ def heartbeat_loop():
     while True:
         try:
             now_utc = datetime.utcnow()
-            local_time = now_utc + timedelta(hours=2)  # UTC+2 фиксированно
+            local_time = now_utc + timedelta(hours=2)
             if local_time.hour == 3 and sent_today != local_time.date():
                 msg = (
                     f"🩵 *HEARTBEAT*\n"
@@ -1176,7 +1078,7 @@ def dashboard():
         else:
             with log_lock:
                 with open(LOG_FILE, "r", encoding="utf-8") as f:
-                    lines = f.readlines()[-50:]  # последние 50 строк
+                    lines = f.readlines()[-50:]
 
             rows = []
             for line in lines:
@@ -1185,13 +1087,11 @@ def dashboard():
                 if len(parts) < 5:
                     continue
 
-                # старые строки могут быть короче
                 while len(parts) < 8:
                     parts.append("")
 
                 t, ticker, direction, tf, sig_type, entry, stop, target = parts[:8]
 
-                # преобразуем время UTC -> UTC+2
                 try:
                     dt = datetime.strptime(t, "%Y-%m-%d %H:%M:%S") + timedelta(hours=2)
                     t = dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -1225,7 +1125,6 @@ def dashboard():
 
     html.append("</table>")
 
-    # добавляем сдвиг +2 часа для времени обновления
     local_time = datetime.utcnow() + timedelta(hours=2)
     html.append(
         f"<p style='color:gray'>Updated {html_esc(local_time.strftime('%Y-%m-%d %H:%M:%S UTC+2'))}</p>"
@@ -1278,7 +1177,6 @@ def stats():
         avg_stop   = sum(x[6] for x in with_prices) / len(with_prices) if with_prices else 0
         avg_target = sum(x[7] for x in with_prices) / len(with_prices) if with_prices else 0
 
-        # последние 10 сигналов с ценами
         last_signals = with_prices[-10:]
         last_rows_html = "".join(
             f"<tr>"
@@ -1293,7 +1191,6 @@ def stats():
             for x in reversed(last_signals)
         )
 
-        # активность по дням за 7 дней
         daily = defaultdict(lambda: {"MTF":0, "CLUSTER":0})
         for ts, _, _, _, typ, *_ in parsed:
             if ts >= last_7d:
@@ -1348,7 +1245,6 @@ def stats():
 # =============== 🧪 SIMULATE (15m + 5m) ===============
 @app.route("/simulate", methods=["POST"])
 def simulate():
-    # тот же ключ, что и у /webhook
     if WEBHOOK_SECRET:
         key = request.args.get("key", "")
         if key != WEBHOOK_SECRET:
@@ -1363,7 +1259,6 @@ def simulate():
         target    = float(data.get("target", 69000))
         tf        = str(data.get("tf", VALID_TF_15M))
 
-        # === 1) лог + уведомление
         msg = (
             f"📊 *SIMULATED SIGNAL*\n"
             f"{ticker} {direction} ({tf})\n"
@@ -1373,7 +1268,6 @@ def simulate():
         log_signal(ticker, direction, tf, "SIMULATED", entry, stop, target)
         send_telegram(msg)
 
-        # === 2) направляем в нужную очередь ===
         now = time.time()
         if direction in ("UP", "DOWN"):
             with lock:
@@ -1412,26 +1306,10 @@ def health():
 if __name__ == "__main__":
     print("🚀 Starting Flask app in single-process mode")
 
-    # Запуск фоновых потоков (в одном процессе)
     threading.Thread(target=cluster_worker_15m, daemon=True).start()
     threading.Thread(target=cluster_worker_5m, daemon=True).start()
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     threading.Thread(target=backup_log_worker, daemon=True).start()
 
-    # Получаем порт от Render (или 8080 локально)
     port = int(os.getenv("PORT", "8080"))
-
-    # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
-
-
-
-
-
-
-
-
-
-
-
-
