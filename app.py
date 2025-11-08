@@ -1438,7 +1438,6 @@ def monitor_closed_trades():
             for r in rows:
                 if len(r) < 5:
                     continue
-                # если уже дописан результат — пропускаем
                 if len(r) >= 9 and r[8] in ("TP", "SL"):
                     continue
                 try:
@@ -1451,7 +1450,6 @@ def monitor_closed_trades():
                 continue
 
             for ticker, direction, entry, stop, target in open_trades:
-                # чтобы не опрашивать одно и то же 1000 раз
                 key = f"{ticker}_{direction}_{entry}"
                 if key in checked:
                     continue
@@ -1477,16 +1475,34 @@ def monitor_closed_trades():
                     ).json()
                     orders = ((hist.get("result") or {}).get("list") or [])
 
-                    # ищем закрывающий ордер
+                    # === определяем, чем закрылась позиция ===
                     result = None
                     for o in orders:
-                        if o.get("reduceOnly") and o.get("orderStatus") == "Filled":
-                            reason = o.get("triggerPrice")
-                            side = o.get("side", "")
-                            if direction == "UP" and side == "Sell":
-                                result = "TP" if float(o.get("price", 0)) >= target else "SL"
-                            elif direction == "DOWN" and side == "Buy":
-                                result = "TP" if float(o.get("price", 0)) <= target else "SL"
+                        if o.get("orderStatus") != "Filled":
+                            continue
+
+                        side = o.get("side", "")
+                        otype = o.get("orderType", "")
+                        trig_by = o.get("triggerBy", "")
+                        close_trigger = o.get("closeOnTrigger", False)
+                        reduce_only = o.get("reduceOnly", False)
+
+                        # лимитный reduceOnly → TP
+                        if reduce_only and otype == "Limit":
+                            result = "TP"
+                            break
+
+                        # маркет с closeOnTrigger → SL
+                        if close_trigger:
+                            result = "SL"
+                            break
+
+                        # fallback по направлению, если Bybit не проставил флаги
+                        if direction == "UP" and side == "Sell":
+                            result = "TP" if "Limit" in otype else "SL"
+                            break
+                        elif direction == "DOWN" and side == "Buy":
+                            result = "TP" if "Limit" in otype else "SL"
                             break
 
                     if not result:
@@ -1499,7 +1515,6 @@ def monitor_closed_trades():
                             for line in csv.reader(f):
                                 updated.append(line)
 
-                        # находим и обновляем первую подходящую запись
                         for row in updated:
                             if len(row) < 8:
                                 continue
@@ -1510,7 +1525,6 @@ def monitor_closed_trades():
                                     row[8] = result
                                 break
 
-                        # сохраняем обратно
                         with open(LOG_FILE, "w", newline="", encoding="utf-8") as f:
                             w = csv.writer(f)
                             for row in updated:
@@ -1541,6 +1555,7 @@ if __name__ == "__main__":
 
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
