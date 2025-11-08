@@ -1245,6 +1245,90 @@ def stats():
     except Exception as e:
         return f"<h3>❌ Ошибка анализа: {html_esc(e)}</h3>", 500
 
+@app.route("/performance")
+def performance():
+    """
+    📊 Сводная статистика по всем сделкам:
+    1. Общее количество и % успешных
+    2. Разбивка по направлениям (лонг/шорт)
+    3. Разбивка по тикерам
+    """
+    if not os.path.exists(LOG_FILE):
+        return "<h3>⚠️ Нет данных для анализа</h3>", 200
+
+    try:
+        with log_lock:
+            rows = list(csv.reader(open(LOG_FILE, "r", encoding="utf-8")))
+
+        # Пропускаем заголовок, если есть
+        header = rows[0]
+        if "time_utc" in header[0].lower():
+            rows = rows[1:]
+
+        trades = []
+        for r in rows:
+            try:
+                ticker, direction, entry, stop, target = r[1], r[2], float(r[5]), float(r[6]), float(r[7])
+                trades.append((ticker, direction, entry, stop, target))
+            except Exception:
+                continue
+
+        if not trades:
+            return "<h3>⚠️ Нет валидных сделок для статистики</h3>", 200
+
+        def trade_result(t):
+            _, direction, entry, stop, target = t
+            # успех, если движение пошло в сторону тейка (ориентируемся на соотношение)
+            profit = (target - entry) if direction == "UP" else (entry - target)
+            loss   = (entry - stop)  if direction == "UP" else (stop - entry)
+            return profit > loss
+
+        total = len(trades)
+        wins = sum(trade_result(t) for t in trades)
+        winrate = (wins / total * 100) if total else 0
+
+        # Разбивка по направлениям
+        longs = [t for t in trades if t[1] == "UP"]
+        shorts = [t for t in trades if t[1] == "DOWN"]
+        long_wr = (sum(trade_result(t) for t in longs) / len(longs) * 100) if longs else 0
+        short_wr = (sum(trade_result(t) for t in shorts) / len(shorts) * 100) if shorts else 0
+
+        # Разбивка по тикерам
+        ticker_stats = {}
+        for t in trades:
+            ticker = t[0]
+            ticker_stats.setdefault(ticker, []).append(t)
+
+        ticker_html = ""
+        for ticker, trds in ticker_stats.items():
+            w = sum(trade_result(t) for t in trds)
+            rate = w / len(trds) * 100
+            ticker_html += f"<tr><td>{ticker}</td><td>{len(trds)}</td><td>{w}</td><td>{rate:.1f}%</td></tr>"
+
+        html = f"""
+        <h2>📊 Итоговая статистика</h2>
+        <ul>
+          <li>Всего сделок: <b>{total}</b></li>
+          <li>Успешных: <b>{wins}</b> ({winrate:.1f}%)</li>
+        </ul>
+
+        <h3>🟩 Лонги</h3>
+        <ul><li>{len(longs)} сделок, успешных {long_wr:.1f}%</li></ul>
+
+        <h3>🟥 Шорты</h3>
+        <ul><li>{len(shorts)} сделок, успешных {short_wr:.1f}%</li></ul>
+
+        <h3>📈 По тикерам</h3>
+        <table border="1" cellpadding="4">
+          <tr><th>Монета</th><th>Всего</th><th>Успешных</th><th>Winrate</th></tr>
+          {ticker_html}
+        </table>
+        """
+        return html, 200
+
+    except Exception as e:
+        return f"<h3>❌ Ошибка анализа: {e}</h3>", 500
+
 # =============== 🧪 SIMULATE (15m + 5m) ===============
 @app.route("/simulate", methods=["POST"])
 def simulate():
@@ -1316,5 +1400,6 @@ if __name__ == "__main__":
 
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
