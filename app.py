@@ -323,7 +323,9 @@ def set_leverage(symbol, leverage):
 def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_price: float, sl_price: float):
     """
     Открывает рыночную позицию и ставит лимитный TP и условный SL.
-    Добавлено логирование, ожидание позиции и защита от ошибок Bybit.
+    Исправлены ошибки Bybit:
+    - TP: timeInForce -> PostOnly
+    - SL: корректная логика triggerDirection (Buy=2, Sell=1)
     """
     try:
         print(f"\n🚀 === NEW TRADE START {symbol} {side} qty={qty} ===")
@@ -340,9 +342,9 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
         })
         print("✅ Market entry response:", resp_open)
 
-        # === 2. Ждём появления позиции в списке ===
+        # === 2. Проверка позиции ===
         time.sleep(1)
-        for attempt in range(10):  # максимум 10 * 0.8 = 8 сек
+        for attempt in range(10):
             try:
                 r = requests.get(
                     f"{BYBIT_BASE_URL}/v5/position/list",
@@ -358,7 +360,7 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
                 print(f"⚠️ Position check error {attempt}: {e}")
             time.sleep(0.8)
 
-        # === 3. Получаем цену ===
+        # === 3. Текущая цена ===
         try:
             r = requests.get(
                 f"{BYBIT_BASE_URL}/v5/market/tickers",
@@ -372,7 +374,7 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
 
         exit_side = "Sell" if side == "Buy" else "Buy"
 
-        # === 4. Формируем TP ===
+        # === 4. TP ===
         buffer_tp = 0.0015 if current_price > 1 else 0.003
         tp_safe = float(tp_price)
         if side == "Buy" and tp_safe <= current_price:
@@ -388,7 +390,7 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
             "qty": str(qty),
             "price": str(tp_safe),
             "reduceOnly": True,
-            "timeInForce": "GoodTillCancel"
+            "timeInForce": "PostOnly"  # исправлено
         }
         print("📦 TP payload:", tp_payload)
         resp_tp = bybit_post("/v5/order/create", tp_payload)
@@ -397,14 +399,14 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
         if resp_tp.get("retCode", 0) != 0:
             print("❌ TP error:", resp_tp.get("retMsg", "Unknown"))
 
-        # === 5. Формируем SL ===
+        # === 5. SL ===
         buffer_mult = 0.002 if current_price > 1 else 0.005
         if side == "Buy":
-            trigger_dir = 1
+            trigger_dir = 2  # ждём падения
             if sl_price >= current_price:
                 sl_price = round(current_price * (1 - buffer_mult), 6)
         else:
-            trigger_dir = 2
+            trigger_dir = 1  # ждём роста
             if sl_price <= current_price:
                 sl_price = round(current_price * (1 + buffer_mult), 6)
 
@@ -1421,6 +1423,7 @@ if __name__ == "__main__":
 
     # Запускаем Flask на всех интерфейсах, чтобы Render видел сервис
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
