@@ -1388,11 +1388,134 @@ def root():
 @app.route("/health")
 def health():
     return "OK", 200
+def monitor_closed_trades():
+    """
+    🔍 Мониторинг Bybit: ищет закрытые сделки и записывает результат (TP/SL) в лог.
+    Работает по всем тикерам, найденным в signals_log.csv.
+    """
+    print("⚙️ Trade monitor started")
+    checked = set()
+
+    while True:
+        try:
+            time.sleep(60)  # опрос раз в минуту
+
+            if not os.path.exists(LOG_FILE):
+                continue
+
+            # читаем логи
+            with log_lock:
+                with open(LOG_FILE, "r", encoding="utf-8") as f:
+                    rows = list(csv.reader(f))
+
+            if not rows or len(rows) < 2:
+                continue
+
+            header = rows[0]
+            if "time_utc" in header[0].lower():
+                rows = rows[1:]
+
+            # берём все сделки без RESULT
+            open_trades = []
+            for r in rows:
+                if len(r) < 5:
+                    continue
+                # если уже дописан результат — пропускаем
+                if len(r) >= 9 and r[8] in ("TP", "SL"):
+                    continue
+                try:
+                    t, ticker, direction, tf, typ, entry, stop, target = r[:8]
+                    open_trades.append((ticker, direction, float(entry or 0), float(stop or 0), float(target or 0)))
+                except Exception:
+                    continue
+
+            if not open_trades:
+                continue
+
+            for ticker, direction, entry, stop, target in open_trades:
+                # чтобы не опрашивать одно и то же 1000 раз
+                key = f"{ticker}_{direction}_{entry}"
+                if key in checked:
+                    continue
+                checked.add(key)
+
+                try:
+                    r = requests.get(
+                        f"{BYBIT_BASE_URL}/v5/position/list",
+                        params={"category": "linear", "symbol": ticker},
+                        timeout=5
+                    ).json()
+
+                    positions = ((r.get("result") or {}).get("list") or [])
+                    pos_size = sum(abs(float(p.get("size", 0))) for p in positions if p.get("symbol") == ticker)
+                    if pos_size > 0:
+                        continue  # позиция ещё открыта
+
+                    # если позиции нет — проверяем историю ордеров
+                    hist = requests.get(
+                        f"{BYBIT_BASE_URL}/v5/order/history",
+                        params={"category": "linear", "symbol": ticker, "limit": 10},
+                        timeout=5
+                    ).json()
+                    orders = ((hist.get("result") or {}).get("list") or [])
+
+                    # ищем закрывающий ордер
+                    result = None
+                    for o in orders:
+                        if o.get("reduceOnly") and o.get("orderStatus") == "Filled":
+                            reason = o.get("triggerPrice")
+                            side = o.get("side", "")
+                            if direction == "UP" and side == "Sell":
+                                result = "TP" if float(o.get("price", 0)) >= target else "SL"
+                            elif direction == "DOWN" and side == "Buy":
+                                result = "TP" if float(o.get("price", 0)) <= target else "SL"
+                            break
+
+                    if not result:
+                        continue
+
+                    # === дописываем результат в лог ===
+                    with log_lock:
+                        updated = []
+                        with open(LOG_FILE, "r", encoding="utf-8") as f:
+                            for line in csv.reader(f):
+                                updated.append(line)
+
+                        # находим и обновляем первую подходящую запись
+                        for row in updated:
+                            if len(row) < 8:
+                                continue
+                            if row[1] == ticker and row[2] == direction and row[5] == str(entry):
+                                if len(row) < 9:
+                                    row.append(result)
+                                else:
+                                    row[8] = result
+                                break
+
+                        # сохраняем обратно
+                        with open(LOG_FILE, "w", newline="", encoding="utf-8") as f:
+                            w = csv.writer(f)
+                            for row in updated:
+                                w.writerow(row)
+
+                    print(f"✅ Trade closed: {ticker} {direction} → {result}")
+                    send_telegram(f"📘 *Trade closed* {ticker} {direction} → {result}")
+
+                except Exception as e:
+                    print(f"❌ Monitor error {ticker}: {e}")
+
+        except Exception as e:
+            print("💀 Trade monitor crashed, restarting in 15s:", e)
+            time.sleep(15)
 
 # =============== MAIN ===============
 if __name__ == "__main__":
     print("🚀 Starting Flask app in single-process mode")
 
+    # Монитор закрытия сделок
+    threading.Thread(target=monitor_closed_trades, daemon=True).start()
+
+    # Остальные воркеры
     threading.Thread(target=cluster_worker_15m, daemon=True).start()
     threading.Thread(target=cluster_worker_5m, daemon=True).start()
     threading.Thread(target=heartbeat_loop, daemon=True).start()
@@ -1400,6 +1523,8 @@ if __name__ == "__main__":
 
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
+
 
 
 
