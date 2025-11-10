@@ -954,81 +954,6 @@ from datetime import datetime, timezone
 
 @app.route("/scalp", methods=["POST"])
 
-# =============== СКАЛЬПЕР ===============
-def handle_scalp():
-    try:
-        data = request.get_json(force=True)
-        ticker = data.get("ticker", "").upper()
-        direction = data.get("direction", "").upper()
-        tf = data.get("tf", "5m")
-
-        if not ticker or direction not in ["UP", "DOWN"]:
-            return {"status": "error", "msg": f"❌ Invalid request: {data}"}, 400
-
-        risk_pct = 0.2
-        take_pct = 0.7
-        leverage = 20
-        api_key = "gloryglorymanunited"
-
-        price = get_last_price(ticker)
-        if price is None:
-            return {"status": "error", "msg": f"❌ Couldn't fetch price for {ticker}"}, 400
-
-        if direction == "UP":
-            trade_dir = "UP"
-            entry = price
-            stop = round(price * (1 - risk_pct / 100), 6)
-            target = round(price * (1 + take_pct / 100), 6)
-        else:
-            trade_dir = "DOWN"
-            entry = price
-            stop = round(price * (1 + risk_pct / 100), 6)
-            target = round(price * (1 - take_pct / 100), 6)
-
-        msg = f"⚡ SCALP {ticker} {trade_dir} {tf} | Entry={entry:.6f} Stop={stop:.6f} Target={target:.6f}"
-        print(msg)
-
-        log_signal(ticker, trade_dir, tf, "SCALP", entry, stop, target)
-
-        payload = {
-            "type": "SCALP",
-            "ticker": ticker,
-            "direction": trade_dir,
-            "entry": entry,
-            "stop": stop,
-            "target": target,
-            "tf": tf,
-            "message": msg
-        }
-
-        url = f"https://tradingview-cluster.onrender.com/webhook?key={api_key}"
-
-        import requests
-        resp = requests.post(url, json=payload, timeout=10)
-
-        if resp.status_code == 200:
-            print(f"[AUTO] trade sent OK: {resp.text}")
-        else:
-            print(f"[AUTO] trade failed {resp.status_code}: {resp.text}")
-
-        return {"status": "ok", "msg": msg}
-
-    except Exception as e:
-        print(f"[ERROR scalp] {e}")
-        return {"status": "error", "msg": str(e)}, 400
-
-def get_last_price(ticker: str):
-    try:
-        import requests
-        url = f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={ticker}"
-        resp = requests.get(url, timeout=5)
-        data = resp.json()
-        if "result" in data and "list" in data["result"]:
-            return float(data["result"]["list"][0]["lastPrice"])
-    except Exception as e:
-        print(f"[WARN] get_last_price({ticker}) failed: {e}")
-    return None
-
 # =============== ВОРКЕР БЕКАПА ===============
 def backup_log_worker():
     if not BACKUP_ENABLED:
@@ -1555,6 +1480,7 @@ if __name__ == "__main__":
 
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
