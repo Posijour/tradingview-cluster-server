@@ -321,16 +321,31 @@ def monitor_and_cleanup(symbol, check_every=5, max_checks=120):
             if size == 0:
                 cancel_payload = {"category": "linear", "symbol": symbol}
                 headers, body = _bybit_sign(cancel_payload)
-                r2 = requests.post(f"{BYBIT_BASE_URL}/v5/order/cancel-all",
-                                   headers=headers, data=body, timeout=5)
-                try:
-                    j2 = r2.json()
-                    print(f"🧹 Cleanup response for {symbol}:", j2)
-                except Exception:
-                    print(f"🧹 Cleanup raw response ({r2.status_code}):", r2.text)
+                r2 = requests.post(
+                    f"{BYBIT_BASE_URL}/v5/order/cancel-all",
+                    headers=headers,
+                    data=body,
+                    timeout=5
+                )
+
+                # улучшенная обработка ответов
+                if r2.status_code == 401:
+                    print(f"⚠️ monitor_and_cleanup HTTP 401 for {symbol}: check API key permissions.")
+                    print("   (need: Trade + Position Write access)")
+                    continue
+
+                if r2.text.strip() == "":
+                    print(f"🧹 Cleanup {symbol}: empty response (likely success despite 401)")
+                else:
+                    try:
+                        j2 = r2.json()
+                        print(f"🧹 Cleanup response for {symbol}:", j2)
+                    except Exception:
+                        print(f"🧹 Cleanup raw response ({r2.status_code}):", r2.text)
                 return
 
         print(f"⏳ Cleanup monitor ended for {symbol} (position still open)")
+
     except Exception as e:
         print(f"❌ monitor_and_cleanup error ({symbol}): {e}")
 
@@ -1498,6 +1513,7 @@ if __name__ == "__main__":
 
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
