@@ -290,7 +290,7 @@ def set_leverage(symbol, leverage):
         print("❌ Leverage set exception:", e)
 
 # === мониторинг и умная чистка «осиротевших» ордеров ===
-def monitor_and_cleanup(symbol, check_every=5, max_checks=120):
+def monitor_and_cleanup(symbol, check_every=10, max_checks=360):
     """
     Следит за позицией. Как только позиция по symbol закрыта, удаляет все оставшиеся ордера.
     Защищает от повторного открытия после TP из-за висящего условного SL.
@@ -1513,6 +1513,7 @@ if __name__ == "__main__":
 
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
