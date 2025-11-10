@@ -591,8 +591,8 @@ def webhook():
             # === БАЗОВЫЕ НАСТРОЙКИ ===
             atr_period = 14
             tf = "1m"
-            target_sl_pct = 0.0025  # желаемый стоп около 0.25%
-            rr_ratio = 3.0          # тейк в 3 раза больше стопа
+            target_sl_pct = 0.004  # желаемый стоп около 0.4%
+            rr_ratio = 1.75          # тейк в 3 раза больше стопа
 
             # === ПОЛУЧАЕМ ЦЕНУ ВХОДА ===
             entry_f = float(entry) if entry else get_last_price(ticker)
@@ -612,7 +612,7 @@ def webhook():
             atr_mult_tp = atr_mult_sl * rr_ratio
 
             stop_atr = atr * atr_mult_sl
-            stop_min = entry_f * 0.002  # минимум 0.2%
+            stop_min = entry_f * 0.003  # минимум 0.3%
             stop_size = max(stop_atr, stop_min)
             take_size = stop_size * rr_ratio
 
@@ -1480,6 +1480,7 @@ if __name__ == "__main__":
 
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
