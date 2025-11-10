@@ -297,22 +297,40 @@ def monitor_and_cleanup(symbol, check_every=5, max_checks=120):
     Защищает от повторного открытия после TP из-за висящего условного SL.
     """
     try:
+        print(f"🧪 Cleanup check for {symbol}: signed headers ready")
+
         for _ in range(max_checks):
             time.sleep(check_every)
+
             r = requests.get(
                 f"{BYBIT_BASE_URL}/v5/position/list",
                 params={"category": "linear", "symbol": symbol},
                 timeout=5
-            ).json()
-            pos_list = ((r.get("result") or {}).get("list") or [])
+            )
+            if r.status_code != 200:
+                print(f"⚠️ monitor_and_cleanup HTTP {r.status_code}: {r.text}")
+                continue
+
+            try:
+                j = r.json()
+            except Exception:
+                print(f"⚠️ monitor_and_cleanup JSON decode error: {r.text[:200]}")
+                continue
+
+            pos_list = ((j.get("result") or {}).get("list") or [])
             size = sum(abs(float(p.get("size", 0))) for p in pos_list if p.get("symbol") == symbol)
             if size == 0:
                 cancel_payload = {"category": "linear", "symbol": symbol}
                 headers, body = _bybit_sign(cancel_payload)
-                requests.post(f"{BYBIT_BASE_URL}/v5/order/cancel-all",
-                              headers=headers, data=body, timeout=5)
-                print(f"🧹 Cleanup: position closed, orders canceled for {symbol}")
+                r2 = requests.post(f"{BYBIT_BASE_URL}/v5/order/cancel-all",
+                                   headers=headers, data=body, timeout=5)
+                try:
+                    j2 = r2.json()
+                    print(f"🧹 Cleanup response for {symbol}:", j2)
+                except Exception:
+                    print(f"🧹 Cleanup raw response ({r2.status_code}):", r2.text)
                 return
+
         print(f"⏳ Cleanup monitor ended for {symbol} (position still open)")
     except Exception as e:
         print(f"❌ monitor_and_cleanup error ({symbol}): {e}")
@@ -1455,7 +1473,8 @@ def monitor_closed_trades():
                             for row in updated:
                                 w.writerow(row)
 
-                    print(f"✅ Trade closed: {ticker} {direction} → {result}")
+                    if result == "TP":
+                    threading.Thread(target=monitor_and_cleanup, args=(ticker,), daemon=True).start()
                     send_telegram(f"📘 *Trade closed* {ticker} {direction} → {result}")
 
                 except Exception as e:
@@ -1480,6 +1499,7 @@ if __name__ == "__main__":
 
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
