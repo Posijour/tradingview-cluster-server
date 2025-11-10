@@ -1474,7 +1474,7 @@ def monitor_closed_trades():
                                 w.writerow(row)
 
                     if result == "TP":
-                    threading.Thread(target=monitor_and_cleanup, args=(ticker,), daemon=True).start()
+                        threading.Thread(target=monitor_and_cleanup, args=(ticker,), daemon=True).start()
                     send_telegram(f"📘 *Trade closed* {ticker} {direction} → {result}")
 
                 except Exception as e:
@@ -1499,6 +1499,7 @@ if __name__ == "__main__":
 
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
