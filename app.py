@@ -17,7 +17,6 @@ BACKUP_ENABLED       = os.getenv("BACKUP_ENABLED", "true").lower() == "true"
 BACKUP_INTERVAL_MIN  = int(os.getenv("BACKUP_INTERVAL_MIN", "360"))  # раз в 6 часов
 BACKUP_ONLY_IF_GROWS = os.getenv("BACKUP_ONLY_IF_GROWS", "true").lower() == "true"
 
-
 # Кластеры
 CLUSTER_WINDOW_MIN     = int(os.getenv("CLUSTER_WINDOW_MIN", "45"))     # окно кластеров в минутах
 CLUSTER_WINDOW_5M_MIN     = int(os.getenv("CLUSTER_WINDOW_5M_MIN", "15"))
@@ -1499,6 +1498,7 @@ if __name__ == "__main__":
 
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
