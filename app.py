@@ -322,6 +322,26 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
     except Exception as e:
         print("💀 place_order_market_with_limit_tp_sl error:", e)
 
+# =============== 🧹 ЧИСТКА СТОПОВ ПОСЛЕ ЗАКРЫТИЯ ===============
+def cancel_all_orders(symbol):
+    """Удаляет стопы и тейки только если позиция уже закрыта"""
+    try:
+        time.sleep(2)  # даём Bybit обновить статусы
+        r = requests.get(f"{BYBIT_BASE_URL}/v5/position/list",
+                         params={"category": "linear", "symbol": symbol},
+                         timeout=5).json()
+        pos_list = ((r.get("result") or {}).get("list") or [])
+        open_size = sum(abs(float(p.get("size", 0))) for p in pos_list)
+        if open_size > 0:
+            print(f"⏸ {symbol}: позиция ещё открыта, стопы не трогаем.")
+            return
+
+        print(f"🧹 Чистим стопы по {symbol}...")
+        bybit_post("/v5/order/cancel-all", {"category": "linear", "symbol": symbol})
+        print(f"✅ Стопы и тейки по {symbol} удалены.")
+    except Exception as e:
+        print(f"⚠️ Ошибка при удалении стопов {symbol}: {e}")
+
 # =============== 🔍 MONITOR CLOSED TRADES (тихий, без Telegram) ===============
 def monitor_closed_trades():
     print("⚙️ Silent trade monitor started")
@@ -379,6 +399,7 @@ def monitor_closed_trades():
                     loss_streak[ticker]=0
                     loss_streak_reset_time[ticker]=now
                 print(f"📊 {ticker}: closed as {result}, SL streak={loss_streak.get(ticker,0)}")
+                cancel_all_orders(ticker)
         except Exception as e:
             print("💀 monitor_closed_trades crashed:", e)
             time.sleep(15)
@@ -422,6 +443,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
