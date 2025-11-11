@@ -255,7 +255,6 @@ def webhook():
             print("⚠️ Qty <= 0 — торговля пропущена")
             return jsonify({"status":"skipped"}),200
 
-        # === Маркет ордер + SL/TP ===
         place_order_market_with_limit_tp_sl(ticker,side,qty,target_f,stop_f)
         send_telegram(f"⚡ *AUTO-TRADE (SCALP)*\n{ticker} {side}\nEntry~{entry_f}\nTP:{target_f}\nSL:{stop_f}")
         log_signal(ticker,direction,"1m","SCALP",entry_f,stop_f,target_f)
@@ -269,8 +268,6 @@ def webhook():
 def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
     try:
         print(f"🚀 NEW TRADE {symbol} {side} qty={qty}")
-
-        # === 1. Маркет-вход ===
         entry_payload = {
             "category": "linear",
             "symbol": symbol,
@@ -283,10 +280,7 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
         }
         entry_resp = bybit_post("/v5/order/create", entry_payload)
         print("✅ Entry placed:", entry_resp)
-
         exit_side = "Sell" if side == "Buy" else "Buy"
-
-        # === 2. Тейк-профит (лимит, reduceOnly) ===
         tp_payload = {
             "category": "linear",
             "symbol": symbol,
@@ -298,10 +292,7 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
             "timeInForce": "GoodTillCancel",
             "closeOnTrigger": False,
         }
-        tp_resp = bybit_post("/v5/order/create", tp_payload)
-        print("✅ TP placed:", tp_resp)
-
-        # === 3. Стоп-лосс (триггерный маркет, reduceOnly + closeOnTrigger) ===
+        bybit_post("/v5/order/create", tp_payload)
         sl_payload = {
             "category": "linear",
             "symbol": symbol,
@@ -314,13 +305,71 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
             "closeOnTrigger": True,
             "timeInForce": "GoodTillCancel",
         }
-        sl_resp = bybit_post("/v5/order/create", sl_payload)
-        print("✅ SL placed:", sl_resp)
-
+        bybit_post("/v5/order/create", sl_payload)
         print("🎯 All orders placed successfully")
-
     except Exception as e:
         print("💀 place_order_market_with_limit_tp_sl error:", e)
+
+# =============== 🔍 MONITOR CLOSED TRADES (тихий, без Telegram) ===============
+def monitor_closed_trades():
+    print("⚙️ Silent trade monitor started")
+    checked = set()
+    while True:
+        try:
+            time.sleep(60)
+            if not os.path.exists(LOG_FILE): continue
+            with log_lock:
+                with open(LOG_FILE, "r", encoding="utf-8") as f:
+                    rows = list(csv.reader(f))
+            if not rows or len(rows) < 2: continue
+            if "time_utc" in rows[0][0].lower(): rows = rows[1:]
+            open_trades = []
+            for r in rows:
+                if len(r) < 8: continue
+                if len(r) >= 9 and r[8] in ("TP","SL"): continue
+                try:
+                    open_trades.append((r[1], r[2], float(r[5]), float(r[6]), float(r[7])))
+                except: continue
+            for ticker, direction, entry, stop, target in open_trades:
+                key=f"{ticker}_{direction}_{entry}"
+                if key in checked: continue
+                checked.add(key)
+                pos=requests.get(f"{BYBIT_BASE_URL}/v5/position/list",params={"category":"linear","symbol":ticker},timeout=5).json()
+                pos_list=((pos.get("result")or{}).get("list")or[])
+                size=sum(abs(float(p.get("size",0))) for p in pos_list if p.get("symbol")==ticker)
+                if size>0: continue
+                hist=requests.get(f"{BYBIT_BASE_URL}/v5/order/history",params={"category":"linear","symbol":ticker,"limit":10},timeout=5).json()
+                orders=((hist.get("result")or{}).get("list")or[])
+                result=None
+                for o in orders:
+                    if o.get("orderStatus")!="Filled": continue
+                    if o.get("reduceOnly") and o.get("orderType")=="Limit": result="TP"; break
+                    if o.get("closeOnTrigger") and o.get("orderType")=="Market": result="SL"; break
+                    if direction=="UP" and o.get("side")=="Sell": result="TP" if "Limit" in o.get("orderType","") else "SL"; break
+                    if direction=="DOWN" and o.get("side")=="Buy": result="TP" if "Limit" in o.get("orderType","") else "SL"; break
+                if not result: continue
+                with log_lock:
+                    updated=[]
+                    with open(LOG_FILE,"r",encoding="utf-8") as f: updated=list(csv.reader(f))
+                    for row in updated:
+                        if len(row)<8: continue
+                        if row[1]==ticker and row[2]==direction and row[5]==str(entry):
+                            if len(row)<9: row.append(result)
+                            else: row[8]=result
+                            break
+                    with open(LOG_FILE,"w",newline="",encoding="utf-8") as f:
+                        w=csv.writer(f); [w.writerow(r) for r in updated]
+                now=time.time()
+                if result=="SL":
+                    loss_streak[ticker]=loss_streak.get(ticker,0)+1
+                    loss_streak_reset_time[ticker]=now
+                elif result=="TP":
+                    loss_streak[ticker]=0
+                    loss_streak_reset_time[ticker]=now
+                print(f"📊 {ticker}: closed as {result}, SL streak={loss_streak.get(ticker,0)}")
+        except Exception as e:
+            print("💀 monitor_closed_trades crashed:", e)
+            time.sleep(15)
 
 # =============== 🧩 СЕРВИСНЫЕ ВОРКЕРЫ ===============
 def heartbeat_loop():
@@ -358,6 +407,6 @@ if __name__=="__main__":
     print("🚀 Starting SCALP-only server")
     threading.Thread(target=heartbeat_loop,daemon=True).start()
     threading.Thread(target=backup_log_worker,daemon=True).start()
+    threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
-
