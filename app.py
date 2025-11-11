@@ -618,7 +618,7 @@ def webhook():
                 print("❌ Trade error (MTF):", e)
         return jsonify({"status": "forwarded"}), 200
 
-# =============== 3️⃣ SCALP (тренд + адаптивный ATR с нормализатором) ===============
+# =============== 3️⃣ SCALP (тренд + адаптивный ATR с нормализатором + динамический TP) ===============
     if typ == "SCALP":
         if not SCALP_ENABLED:
             print(f"⏸ SCALP trade disabled by env. {ticker} {direction}")
@@ -643,7 +643,7 @@ def webhook():
             atr_period = 14
             tf = "1m"
             target_sl_pct = 0.006  # желаемый стоп около 0.6%
-            rr_ratio = 1.5        # тейк в 1.5 раза больше стопа
+            rr_ratio_base = 1.5   # базовый RR
 
             # === ПОЛУЧАЕМ ЦЕНУ ВХОДА ===
             entry_f = float(entry) if entry else get_last_price(ticker)
@@ -653,20 +653,30 @@ def webhook():
 
             # === ATR ===
             atr = get_atr(ticker, period=atr_period, interval="5")
+            atr_base = get_atr(ticker, period=100, interval="5")
+
             if atr <= 0:
-                atr = entry_f * 0.002  # fallback, если не удалось получить ATR
+                atr = entry_f * 0.002
                 print(f"[ATR warn] {ticker}: fallback ATR {atr:.6f}")
 
-            # === Расчёт стопа и тейка ===
+            # === Расчёт стопа ===
             atr_rel = atr / entry_f
-            atr_mult_sl = target_sl_pct / max(atr_rel, 1e-6)
-            atr_mult_tp = atr_mult_sl * rr_ratio
+            stop_size = max(entry_f * 0.002, atr * (target_sl_pct / max(atr_rel, 1e-6)))
+            stop_min = entry_f * 0.002
+            stop_size = max(stop_size, stop_min)
 
-            stop_atr = atr * atr_mult_sl
-            stop_min = entry_f * 0.003  # минимум 0.3%
-            stop_size = max(stop_atr, stop_min)
+            # === Динамический RR (TP адаптируется под волатильность) ===
+            ratio_rel = atr / max(atr_base, 1e-8)
+            if ratio_rel > 1.8:
+                rr_ratio = rr_ratio_base * 1.5  # волатильный рынок — TP шире
+            elif ratio_rel < 0.7:
+                rr_ratio = rr_ratio_base * 0.8  # флет — TP ближе
+            else:
+                rr_ratio = rr_ratio_base
+
             take_size = stop_size * rr_ratio
 
+            # === Расчёт уровней ===
             if direction == "UP":
                 stop_f = round(entry_f - stop_size, 6)
                 target_f = round(entry_f + take_size, 6)
@@ -683,7 +693,7 @@ def webhook():
             msg = (
                 f"⚡ SCALP {ticker} {side} | Entry={entry_f:.6f} "
                 f"Stop={stop_f:.6f} Target={target_f:.6f} "
-                f"(SL={sl_pct}%, TP={tp_pct}%)"
+                f"(SL={sl_pct}%, TP={tp_pct}%, RR={rr_ratio:.2f})"
             )
             print(msg)
 
@@ -705,7 +715,8 @@ def webhook():
                 f"{ticker} {side}\n"
                 f"Entry~{entry_f}\n"
                 f"TP:{target_f} ({tp_pct}%)\n"
-                f"SL:{stop_f} ({sl_pct}%)"
+                f"SL:{stop_f} ({sl_pct}%)\n"
+                f"RR={rr_ratio:.2f}"
             )
 
             log_signal(ticker, direction, tf, "SCALP", entry_f, stop_f, target_f)
@@ -1562,5 +1573,6 @@ if __name__ == "__main__":
 
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
