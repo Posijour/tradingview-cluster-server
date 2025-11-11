@@ -624,29 +624,22 @@ def webhook():
         if not SCALP_ENABLED:
             print(f"⏸ SCALP trade disabled by env. {ticker} {direction}")
             return jsonify({"status": "paused"}), 200
-    # === Проверка: не открыта ли уже позиция по этому тикеру ===
-    try:
-        resp = requests.get(
-            f"{BYBIT_BASE_URL}/v5/position/list",
-            params={"category": "linear", "symbol": ticker},
-            timeout=5
-        )
-        j = resp.json()
-        pos_list = ((j.get("result") or {}).get("list") or [])
-        open_size = sum(abs(float(p.get("size", 0))) for p in pos_list if p.get("symbol") == ticker)
-        pos_side = None
-        for p in pos_list:
-            if abs(float(p.get("size", 0))) > 0:
-                pos_side = p.get("side", "").upper()
-                break
 
-        if open_size > 0:
-            # если направление совпадает с сигналом — пропускаем
-            if (pos_side == "BUY" and direction == "UP") or (pos_side == "SELL" and direction == "DOWN"):
-                print(f"⏸ {ticker}: уже открыта позиция {pos_side}, новый сигнал пропущен.")
-                return jsonify({"status": "skipped_existing_position"}), 200
-    except Exception as e:
-        print(f"⚠️ Ошибка при проверке открытых позиций {ticker}: {e}")
+        # === Проверка: не открыта ли уже позиция по тикеру (блокировка любых новых сделок) ===
+        try:
+            resp = requests.get(
+                f"{BYBIT_BASE_URL}/v5/position/list",
+                params={"category": "linear", "symbol": ticker},
+                timeout=5
+            )
+            j = resp.json()
+            pos_list = ((j.get("result") or {}).get("list") or [])
+            open_size = sum(abs(float(p.get("size", 0))) for p in pos_list if p.get("symbol") == ticker)
+            if open_size > 0:
+                print(f"⏸ {ticker}: уже открыта позиция (size={open_size}), новый сигнал заблокирован.")
+                return jsonify({"status": "skipped_open_position"}), 200
+        except Exception as e:
+            print(f"⚠️ Ошибка при проверке открытой позиции для {ticker}: {e}")
 
     if TRADE_ENABLED:
         try:
@@ -1597,6 +1590,7 @@ if __name__ == "__main__":
 
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
