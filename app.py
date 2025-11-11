@@ -336,7 +336,7 @@ def monitor_and_cleanup(symbol, check_every=10, max_checks=360):
 
                 # улучшенная обработка ответов
                 if r2.status_code == 401:
-                    print(f"⚠️ _and_cleanup HTTP 401 for {symbol}: check API key permissions.")
+                    print(f"⚠️ monitor_and_cleanup HTTP 401 for {symbol}: check API key permissions.")
                     print("   (need: Trade + Position Write access)")
                     continue
 
@@ -350,10 +350,11 @@ def monitor_and_cleanup(symbol, check_every=10, max_checks=360):
                         print(f"🧹 Cleanup raw response ({r2.status_code}):", r2.text)
                 return
 
-        print(f"⏳ Cleanup  ended for {symbol} (position still open)")
+        print(f"⏳ Cleanup ended for {symbol} (position still open)")
 
     except Exception as e:
-        print(f"❌ _and_cleanup error ({symbol}): {e}")
+        print(f"❌ monitor_and_cleanup error ({symbol}): {e}")
+
 
 def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_price: float, sl_price: float):
     """
@@ -474,7 +475,7 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
         print(f"✅ TP/SL placed successfully for {symbol}")
 
         # === 6. Старт мониторинга для умной очистки ===
-        threading.Thread(target=_and_cleanup, args=(symbol,), daemon=True).start()
+        threading.Thread(target=monitor_and_cleanup, args=(symbol,), daemon=True).start()
 
         return {"entry": resp_open, "tp": resp_tp, "sl": resp_sl}
 
@@ -1573,6 +1574,7 @@ if __name__ == "__main__":
 
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
