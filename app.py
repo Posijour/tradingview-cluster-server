@@ -264,10 +264,11 @@ def webhook():
 
     return jsonify({"status":"ok"}),200
 
-# =============== 💀 PLACE ORDER (как в старой стабильной версии) ===============
 def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
     try:
         print(f"🚀 NEW TRADE {symbol} {side} qty={qty}")
+
+        # === 1. Маркет-вход ===
         entry_payload = {
             "category": "linear",
             "symbol": symbol,
@@ -277,10 +278,14 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
             "timeInForce": "IOC",
             "reduceOnly": False,
             "closeOnTrigger": False,
+            "positionIdx": 0,  # обязательно
         }
         entry_resp = bybit_post("/v5/order/create", entry_payload)
         print("✅ Entry placed:", entry_resp)
+
         exit_side = "Sell" if side == "Buy" else "Buy"
+
+        # === 2. Тейк-профит ===
         tp_payload = {
             "category": "linear",
             "symbol": symbol,
@@ -291,8 +296,12 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
             "reduceOnly": True,
             "timeInForce": "GoodTillCancel",
             "closeOnTrigger": False,
+            "positionIdx": 0,
         }
-        bybit_post("/v5/order/create", tp_payload)
+        tp_resp = bybit_post("/v5/order/create", tp_payload)
+        print("✅ TP placed:", tp_resp)
+
+        # === 3. Стоп-лосс ===
         sl_payload = {
             "category": "linear",
             "symbol": symbol,
@@ -304,9 +313,13 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
             "reduceOnly": True,
             "closeOnTrigger": True,
             "timeInForce": "GoodTillCancel",
+            "positionIdx": 0,
         }
-        bybit_post("/v5/order/create", sl_payload)
+        sl_resp = bybit_post("/v5/order/create", sl_payload)
+        print("✅ SL placed:", sl_resp)
+
         print("🎯 All orders placed successfully")
+
     except Exception as e:
         print("💀 place_order_market_with_limit_tp_sl error:", e)
 
@@ -410,3 +423,4 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
