@@ -265,25 +265,62 @@ def webhook():
 
     return jsonify({"status":"ok"}),200
 
-# =============== 💀 PLACE ORDER (сокращённая версия) ===============
-def place_order_market_with_limit_tp_sl(symbol,side,qty,tp_price,sl_price):
+# =============== 💀 PLACE ORDER (как в старой стабильной версии) ===============
+def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
     try:
         print(f"🚀 NEW TRADE {symbol} {side} qty={qty}")
-        bybit_post("/v5/order/create",{
-            "category":"linear","symbol":symbol,"side":side,"orderType":"Market","qty":str(qty)
-        })
-        exit_side="Sell" if side=="Buy" else "Buy"
-        bybit_post("/v5/order/create",{
-            "category":"linear","symbol":symbol,"side":exit_side,"orderType":"Limit","qty":str(qty),
-            "price":str(tp_price),"reduceOnly":True,"timeInForce":"PostOnly"
-        })
-        bybit_post("/v5/order/create",{
-            "category":"linear","symbol":symbol,"side":exit_side,"orderType":"Market","qty":str(qty),
-            "triggerPrice":str(sl_price),"triggerBy":"LastPrice","reduceOnly":True,"closeOnTrigger":True
-        })
-        print("✅ TP/SL placed.")
+
+        # === 1. Маркет-вход ===
+        entry_payload = {
+            "category": "linear",
+            "symbol": symbol,
+            "side": side,
+            "orderType": "Market",
+            "qty": str(qty),
+            "timeInForce": "IOC",
+            "reduceOnly": False,
+            "closeOnTrigger": False,
+        }
+        entry_resp = bybit_post("/v5/order/create", entry_payload)
+        print("✅ Entry placed:", entry_resp)
+
+        exit_side = "Sell" if side == "Buy" else "Buy"
+
+        # === 2. Тейк-профит (лимит, reduceOnly) ===
+        tp_payload = {
+            "category": "linear",
+            "symbol": symbol,
+            "side": exit_side,
+            "orderType": "Limit",
+            "qty": str(qty),
+            "price": str(tp_price),
+            "reduceOnly": True,
+            "timeInForce": "GoodTillCancel",
+            "closeOnTrigger": False,
+        }
+        tp_resp = bybit_post("/v5/order/create", tp_payload)
+        print("✅ TP placed:", tp_resp)
+
+        # === 3. Стоп-лосс (триггерный маркет, reduceOnly + closeOnTrigger) ===
+        sl_payload = {
+            "category": "linear",
+            "symbol": symbol,
+            "side": exit_side,
+            "orderType": "Market",
+            "qty": str(qty),
+            "triggerPrice": str(sl_price),
+            "triggerBy": "LastPrice",
+            "reduceOnly": True,
+            "closeOnTrigger": True,
+            "timeInForce": "GoodTillCancel",
+        }
+        sl_resp = bybit_post("/v5/order/create", sl_payload)
+        print("✅ SL placed:", sl_resp)
+
+        print("🎯 All orders placed successfully")
+
     except Exception as e:
-        print("💀 place_order_market_with_limit_tp_sl:", e)
+        print("💀 place_order_market_with_limit_tp_sl error:", e)
 
 # =============== 🧩 СЕРВИСНЫЕ ВОРКЕРЫ ===============
 def heartbeat_loop():
@@ -323,3 +360,4 @@ if __name__=="__main__":
     threading.Thread(target=backup_log_worker,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
