@@ -318,29 +318,63 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
         print("✅ SL placed:", sl_resp)
 
         print("🎯 All orders placed successfully")
+        # стартуем фоновую чистку независимо от мониторинга по логу
+        threading.Thread(target=monitor_and_cleanup, args=(symbol,), daemon=True).start()
 
     except Exception as e:
         print("💀 place_order_market_with_limit_tp_sl error:", e)
 
 # =============== 🧹 ЧИСТКА СТОПОВ ПОСЛЕ ЗАКРЫТИЯ ===============
-def cancel_all_orders(symbol):
-    """Удаляет стопы и тейки только если позиция уже закрыта"""
+def _min_qty(symbol: str) -> float:
     try:
-        time.sleep(2)  # даём Bybit обновить статусы
-        r = requests.get(f"{BYBIT_BASE_URL}/v5/position/list",
-                         params={"category": "linear", "symbol": symbol},
-                         timeout=5).json()
-        pos_list = ((r.get("result") or {}).get("list") or [])
-        open_size = sum(abs(float(p.get("size", 0))) for p in pos_list)
-        if open_size > 0:
-            print(f"⏸ {symbol}: позиция ещё открыта, стопы не трогаем.")
-            return
+        r = requests.get(
+            f"{BYBIT_BASE_URL}/v5/market/instruments-info",
+            params={"category": "linear", "symbol": symbol},
+            timeout=5
+        ).json()
+        info = (((r.get("result") or {}).get("list") or []))[0]
+        min_qty = float((info.get("lotSizeFilter") or {}).get("minOrderQty", "0.001"))
+        return min_qty
+    except Exception:
+        return 0.001
 
-        print(f"🧹 Чистим стопы по {symbol}...")
-        bybit_post("/v5/order/cancel-all", {"category": "linear", "symbol": symbol})
-        print(f"✅ Стопы и тейки по {symbol} удалены.")
-    except Exception as e:
-        print(f"⚠️ Ошибка при удалении стопов {symbol}: {e}")
+def cancel_all_orders(symbol: str, retries: int = 3):
+    """Чистит и активные, и условные ордера. Делает несколько попыток."""
+    for attempt in range(retries):
+        try:
+            # активные (Limit/Market)
+            bybit_post("/v5/order/cancel-all", {"category": "linear", "symbol": symbol, "orderFilter": "Order"})
+            # условные (триггерные SL/TP)
+            bybit_post("/v5/order/cancel-all", {"category": "linear", "symbol": symbol, "orderFilter": "StopOrder"})
+            print(f"🧹 {symbol}: cancel-all done (try {attempt+1}/{retries})")
+            return
+        except Exception as e:
+            print(f"⚠️ {symbol}: cancel-all failed on try {attempt+1}: {e}")
+            time.sleep(1.2)
+
+def monitor_and_cleanup(symbol: str, check_every: float = 3.0, max_checks: int = 600):
+    """Проверяет размер позиции; как только он ~0 — удаляет все ордера."""
+    tiny = _min_qty(symbol) * 0.6  # всё, что меньше минимума на бирже, считаем нулём
+    for i in range(max_checks):
+        try:
+            time.sleep(check_every)
+            r = requests.get(
+                f"{BYBIT_BASE_URL}/v5/position/list",
+                params={"category": "linear", "symbol": symbol},
+                timeout=5
+            ).json()
+            pos_list = ((r.get("result") or {}).get("list") or [])
+            size = sum(abs(float(p.get("size", 0))) for p in pos_list if p.get("symbol") == symbol)
+
+            if size <= tiny:
+                # даём бирже добить статусы и снимаем всё
+                time.sleep(1.0)
+                cancel_all_orders(symbol)
+                print(f"✅ {symbol}: position={size} ≤ {tiny}, orders cleaned")
+                return
+        except Exception as e:
+            print(f"⚠️ monitor_and_cleanup {symbol}: {e}")
+    print(f"⏳ {symbol}: cleanup timed out (still some size or API slow)")
 
 # =============== 🔍 MONITOR CLOSED TRADES (тихий, без Telegram) ===============
 def monitor_closed_trades():
@@ -443,6 +477,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
