@@ -283,8 +283,9 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
         print("✅ Entry placed:", entry_resp)
 
         exit_side = "Sell" if side == "Buy" else "Buy"
+        trigger_dir = 2 if side == "Buy" else 1
 
-        # === 2. Тейк-профит (Limit, reduceOnly=True) ===
+        # === 2. Тейк-профит (Limit, reduceOnly, PostOnly) ===
         tp_payload = {
             "category": "linear",
             "symbol": symbol,
@@ -293,12 +294,13 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
             "qty": str(qty),
             "price": str(tp_price),
             "reduceOnly": True,
-            "timeInForce": "GoodTillCancel"
+            "timeInForce": "PostOnly",
+            "closeOnTrigger": False
         }
         tp_resp = bybit_post("/v5/order/create", tp_payload)
         print("✅ TP placed:", tp_resp)
 
-        # === 3. Стоп-лосс (Trigger Market, closeOnTrigger=True) ===
+        # === 3. Стоп-лосс (Trigger Market, reduceOnly + closeOnTrigger) ===
         sl_payload = {
             "category": "linear",
             "symbol": symbol,
@@ -307,6 +309,7 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
             "qty": str(qty),
             "triggerPrice": str(sl_price),
             "triggerBy": "LastPrice",
+            "triggerDirection": trigger_dir,
             "reduceOnly": True,
             "closeOnTrigger": True,
             "timeInForce": "GoodTillCancel"
@@ -419,5 +422,6 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
