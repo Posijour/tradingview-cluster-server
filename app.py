@@ -352,7 +352,7 @@ def cancel_all_orders(symbol: str, retries: int = 3):
             print(f"⚠️ {symbol}: cancel-all failed on try {attempt+1}: {e}")
             time.sleep(1.2)
 
-def monitor_and_cleanup(symbol: str, check_every: float = 3.0, max_checks: int = 600):
+def monitor_and_cleanup(symbol: str, check_every: float = 3.0, max_checks: int = 1200):
     """Проверяет размер позиции; как только он ~0 — удаляет все ордера."""
     tiny = _min_qty(symbol) * 0.6  # всё, что меньше минимума на бирже, считаем нулём
     for i in range(max_checks):
@@ -477,6 +477,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
