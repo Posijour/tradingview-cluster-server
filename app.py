@@ -30,6 +30,12 @@ CLUSTER_COOLDOWN_SEC = CLUSTER_WINDOW_MIN * 60
 CLUSTER_5M_COOLDOWN_SEC   = int(os.getenv("CLUSTER_5M_COOLDOWN_SEC", "900"))
 CLUSTER_TRADE_DELAY_SEC = int(os.getenv("CLUSTER_TRADE_DELAY_SEC", "600"))  # 10 минут
 
+# === Глобальные переменные для счётчика стопов ===
+loss_streak = {}
+loss_streak_reset_time = {}
+MAX_SL_STREAK = 3        # сколько подряд стопов даёт паузу
+PAUSE_MINUTES = 30       # пауза в минутах
+
 # Bybit
 BYBIT_API_KEY    = os.getenv("BYBIT_API_KEY", "")
 BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET", "")
@@ -330,7 +336,7 @@ def monitor_and_cleanup(symbol, check_every=10, max_checks=360):
 
                 # улучшенная обработка ответов
                 if r2.status_code == 401:
-                    print(f"⚠️ monitor_and_cleanup HTTP 401 for {symbol}: check API key permissions.")
+                    print(f"⚠️ _and_cleanup HTTP 401 for {symbol}: check API key permissions.")
                     print("   (need: Trade + Position Write access)")
                     continue
 
@@ -344,10 +350,10 @@ def monitor_and_cleanup(symbol, check_every=10, max_checks=360):
                         print(f"🧹 Cleanup raw response ({r2.status_code}):", r2.text)
                 return
 
-        print(f"⏳ Cleanup monitor ended for {symbol} (position still open)")
+        print(f"⏳ Cleanup  ended for {symbol} (position still open)")
 
     except Exception as e:
-        print(f"❌ monitor_and_cleanup error ({symbol}): {e}")
+        print(f"❌ _and_cleanup error ({symbol}): {e}")
 
 def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_price: float, sl_price: float):
     """
@@ -468,7 +474,7 @@ def place_order_market_with_limit_tp_sl(symbol: str, side: str, qty: float, tp_p
         print(f"✅ TP/SL placed successfully for {symbol}")
 
         # === 6. Старт мониторинга для умной очистки ===
-        threading.Thread(target=monitor_and_cleanup, args=(symbol,), daemon=True).start()
+        threading.Thread(target=_and_cleanup, args=(symbol,), daemon=True).start()
 
         return {"entry": resp_open, "tp": resp_tp, "sl": resp_sl}
 
@@ -620,11 +626,24 @@ def webhook():
 
     if TRADE_ENABLED:
         try:
+            # === проверка на паузу из-за серии стопов ===
+            now = time.time()
+            streak = loss_streak.get(ticker, 0)
+            last_reset = loss_streak_reset_time.get(ticker, 0)
+
+            if streak >= MAX_SL_STREAK and (now - last_reset < PAUSE_MINUTES * 60):
+                print(f"⏸ Пропуск {ticker}: серия стопов ({streak}) — пауза активна.")
+                send_telegram(
+                    f"⚠️ {ticker} автотрейд на паузе "
+                    f"({streak} SL подряд, ждём {PAUSE_MINUTES} мин.)"
+                )
+                return jsonify({"status": "paused_due_to_sl_streak"}), 200
+
             # === БАЗОВЫЕ НАСТРОЙКИ ===
             atr_period = 14
             tf = "1m"
             target_sl_pct = 0.004  # желаемый стоп около 0.4%
-            rr_ratio = 1.75          # тейк в 3 раза больше стопа
+            rr_ratio = 1.75        # тейк в 1.75 раза больше стопа
 
             # === ПОЛУЧАЕМ ЦЕНУ ВХОДА ===
             entry_f = float(entry) if entry else get_last_price(ticker)
@@ -675,7 +694,9 @@ def webhook():
                 print("⚠️ Qty <= 0 — торговля пропущена")
                 return jsonify({"status": "skipped"}), 200
 
-            resp = place_order_market_with_limit_tp_sl(ticker, side, qty, target_f, stop_f)
+            resp = place_order_market_with_limit_tp_sl(
+                ticker, side, qty, target_f, stop_f
+            )
             print("✅ AUTO-TRADE (SCALP) result:", resp)
 
             # === уведомление ===
@@ -1021,6 +1042,8 @@ def heartbeat_loop():
         try:
             now_utc = datetime.utcnow()
             local_time = now_utc + timedelta(hours=2)
+
+            # === ежедневный heartbeat ===
             if local_time.hour == 3 and sent_today != local_time.date():
                 msg = (
                     f"🩵 *HEARTBEAT*\n"
@@ -1030,8 +1053,21 @@ def heartbeat_loop():
                 send_telegram(msg)
                 print("💬 Heartbeat sent to Telegram.")
                 sent_today = local_time.date()
+
+            # === очистка старых streak-ов (прошло > 0.5 часа) ===
+            now_ts = time.time()
+            expired = []
+            for t, ts in list(loss_streak_reset_time.items()):
+                if now_ts - ts > 1800:
+                    expired.append(t)
+            for t in expired:
+                loss_streak.pop(t, None)
+                loss_streak_reset_time.pop(t, None)
+                print(f"♻️ streak сброшен для {t}")
+
         except Exception as e:
             print("❌ Heartbeat error:", e)
+
         time.sleep(60)
 
 # =============== 📊 DASHBOARD (последние сигналы) ===============
@@ -1487,6 +1523,19 @@ def monitor_closed_trades():
                             for row in updated:
                                 w.writerow(row)
 
+                    # === обновляем счётчик стопов ===
+                    try:
+                        now = time.time()
+                        if result == "SL":
+                            loss_streak[ticker] = loss_streak.get(ticker, 0) + 1
+                            loss_streak_reset_time[ticker] = now
+                        elif result == "TP":
+                            loss_streak[ticker] = 0
+                            loss_streak_reset_time[ticker] = now
+                        print(f"📉 {ticker}: текущая серия SL = {loss_streak.get(ticker, 0)}")
+                    except Exception as e:
+                        print(f"⚠️ Ошибка при обновлении streak для {ticker}: {e}")
+
                     if result == "TP":
                         threading.Thread(target=monitor_and_cleanup, args=(ticker,), daemon=True).start()
                     send_telegram(f"📘 *Trade closed* {ticker} {direction} → {result}")
@@ -1513,18 +1562,4 @@ if __name__ == "__main__":
 
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
