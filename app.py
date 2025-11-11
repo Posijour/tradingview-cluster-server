@@ -277,15 +277,14 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
             "qty": str(qty),
             "timeInForce": "IOC",
             "reduceOnly": False,
-            "closeOnTrigger": False,
-            "positionIdx": 0,  # обязательно
+            "closeOnTrigger": False
         }
         entry_resp = bybit_post("/v5/order/create", entry_payload)
         print("✅ Entry placed:", entry_resp)
 
         exit_side = "Sell" if side == "Buy" else "Buy"
 
-        # === 2. Тейк-профит ===
+        # === 2. Тейк-профит (Limit, reduceOnly=True) ===
         tp_payload = {
             "category": "linear",
             "symbol": symbol,
@@ -294,14 +293,12 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
             "qty": str(qty),
             "price": str(tp_price),
             "reduceOnly": True,
-            "timeInForce": "GoodTillCancel",
-            "closeOnTrigger": False,
-            "positionIdx": 0,
+            "timeInForce": "GoodTillCancel"
         }
         tp_resp = bybit_post("/v5/order/create", tp_payload)
         print("✅ TP placed:", tp_resp)
 
-        # === 3. Стоп-лосс ===
+        # === 3. Стоп-лосс (Trigger Market, closeOnTrigger=True) ===
         sl_payload = {
             "category": "linear",
             "symbol": symbol,
@@ -312,8 +309,7 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
             "triggerBy": "LastPrice",
             "reduceOnly": True,
             "closeOnTrigger": True,
-            "timeInForce": "GoodTillCancel",
-            "positionIdx": 0,
+            "timeInForce": "GoodTillCancel"
         }
         sl_resp = bybit_post("/v5/order/create", sl_payload)
         print("✅ SL placed:", sl_resp)
@@ -423,4 +419,5 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
