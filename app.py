@@ -479,6 +479,11 @@ def backup_log_worker():
 @app.route("/")
 def root(): return "OK",200
 
+# =============== HEALTHCHECK ===============
+@app.route("/health")
+def health():
+    return "OK", 200
+
 if __name__=="__main__":
     print("🚀 Starting SCALP-only server")
     threading.Thread(target=heartbeat_loop,daemon=True).start()
@@ -486,6 +491,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
