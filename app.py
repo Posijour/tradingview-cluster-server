@@ -281,7 +281,7 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
     try:
         print(f"🚀 NEW TRADE {symbol} {side} qty={qty}")
 
-        # === 1. Маркет-вход ===
+        # 1) Маркет-вход
         entry_payload = {
             "category": "linear",
             "symbol": symbol,
@@ -290,48 +290,34 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
             "qty": str(qty),
             "timeInForce": "IOC",
             "reduceOnly": False,
-            "closeOnTrigger": False
+            "closeOnTrigger": False,
+            "positionIdx": 0
         }
         entry_resp = bybit_post("/v5/order/create", entry_payload)
         print("✅ Entry placed:", entry_resp)
 
-        exit_side = "Sell" if side == "Buy" else "Buy"
-        trigger_dir = 2 if side == "Buy" else 1
+        # Небольшая пауза, чтобы позиция гарантированно появилась
+        time.sleep(0.5)
 
-        # === 2. Тейк-профит (Limit, reduceOnly, PostOnly) ===
-        tp_payload = {
+        # 2) Привязанный TP/SL к позиции (tpslMode=Full)
+        #    Биржа сама снимет оставшийся ордер при закрытии позиции
+        #    tpOrderType=Limit, slTriggerBy=LastPrice
+        set_tpsl_payload = {
             "category": "linear",
             "symbol": symbol,
-            "side": exit_side,
-            "orderType": "Limit",
-            "qty": str(qty),
-            "price": str(tp_price),
-            "reduceOnly": True,
-            "timeInForce": "PostOnly",
-            "closeOnTrigger": False
+            "positionIdx": 0,
+            "tpslMode": "Full",
+            "takeProfit": str(tp_price),
+            "tpOrderType": "Limit",
+            "tpTimeInForce": "GoodTillCancel",
+            "stopLoss": str(sl_price),
+            "slTriggerBy": "LastPrice"
         }
-        tp_resp = bybit_post("/v5/order/create", tp_payload)
-        print("✅ TP placed:", tp_resp)
+        tpsl_resp = bybit_post("/v5/position/set-tpsl", set_tpsl_payload)
+        print("✅ TPSL attached to position:", tpsl_resp)
 
-        # === 3. Стоп-лосс (Trigger Market, reduceOnly + closeOnTrigger) ===
-        sl_payload = {
-            "category": "linear",
-            "symbol": symbol,
-            "side": exit_side,
-            "orderType": "Market",
-            "qty": str(qty),
-            "triggerPrice": str(sl_price),
-            "triggerBy": "LastPrice",
-            "triggerDirection": trigger_dir,
-            "reduceOnly": True,
-            "closeOnTrigger": True,
-            "timeInForce": "GoodTillCancel"
-        }
-        sl_resp = bybit_post("/v5/order/create", sl_payload)
-        print("✅ SL placed:", sl_resp)
-
-        print("🎯 All orders placed successfully")
-        # стартуем фоновую чистку независимо от мониторинга по логу
+        print("🎯 Entry + TPSL done (position-linked)")
+        # Резервная чистка как safety net (обычно не понадобится)
         threading.Thread(target=monitor_and_cleanup, args=(symbol,), daemon=True).start()
 
     except Exception as e:
@@ -516,6 +502,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
