@@ -191,6 +191,7 @@ def parse_payload(req):
     }
 
 # =============== 🔔 ВЕБХУК: ТОЛЬКО SCALP ===============
+print("RAW PAYLOAD:", request.data, flush=True)
 @app.route("/webhook", methods=["POST"])
 def webhook():
     if WEBHOOK_SECRET and request.args.get("key", "") != WEBHOOK_SECRET:
@@ -198,6 +199,7 @@ def webhook():
 
     payload = parse_payload(request)
     typ, ticker, direction, entry = payload["type"], payload["ticker"], payload["direction"], payload["entry"]
+    print("PARSED PAYLOAD:", payload, flush=True)
 
     if typ != "SCALP" or not SCALP_ENABLED:
         return jsonify({"status": "ignored"}), 200
@@ -507,6 +509,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
