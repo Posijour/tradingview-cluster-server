@@ -9,18 +9,18 @@ from flask import Flask, request, jsonify
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID", "766363011")
 
-BACKUP_ENABLED       = os.getenv("BACKUP_ENABLED", "true").lower() == "true"
-BACKUP_INTERVAL_MIN  = int(os.getenv("BACKUP_INTERVAL_MIN", "360"))
+BACKUP_ENABLED = os.getenv("BACKUP_ENABLED", "true").lower() == "true"
+BACKUP_INTERVAL_MIN = int(os.getenv("BACKUP_INTERVAL_MIN", "360"))
 BACKUP_ONLY_IF_GROWS = os.getenv("BACKUP_ONLY_IF_GROWS", "true").lower() == "true"
 
-BYBIT_API_KEY    = os.getenv("BYBIT_API_KEY", "")
+BYBIT_API_KEY = os.getenv("BYBIT_API_KEY", "")
 BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET", "")
-BYBIT_BASE_URL   = os.getenv("BYBIT_BASE_URL", "https://api.bybit.com")
+BYBIT_BASE_URL = os.getenv("BYBIT_BASE_URL", "https://api.bybit.com")
 
-TRADE_ENABLED  = os.getenv("TRADE_ENABLED", "false").lower() == "true"
-SCALP_ENABLED  = os.getenv("SCALP_ENABLED", "true").lower() == "true"
-MAX_RISK_USDT  = float(os.getenv("MAX_RISK_USDT", "1"))
-LEVERAGE       = float(os.getenv("LEVERAGE", "20"))
+TRADE_ENABLED = os.getenv("TRADE_ENABLED", "false").lower() == "true"
+SCALP_ENABLED = os.getenv("SCALP_ENABLED", "true").lower() == "true"
+MAX_RISK_USDT = float(os.getenv("MAX_RISK_USDT", "1"))
+LEVERAGE = float(os.getenv("LEVERAGE", "20"))
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 
 MAX_SL_STREAK = 3
@@ -55,7 +55,7 @@ def _bybit_sign(payload: dict, method: str = "POST", query_string: str = ""):
     return headers, body
 
 # =============== 📨 Telegram ===============
-MD_ESCAPE = re.compile(r'([_*\[\]()~`>#+\-=|{}.!])')
+MD_ESCAPE = re.compile(r'([_*\[\]()~>#+\-=|{}.!])')
 def md_escape(text: str) -> str:
     return MD_ESCAPE.sub(r'\\\1', text)
 
@@ -110,6 +110,7 @@ def bybit_post(path: str, payload: dict) -> dict:
     headers, body = _bybit_sign(payload)
     r = requests.post(url, headers=headers, data=body, timeout=10)
     try:
+        print(f"\n📡 Bybit POST {path}\nPayload: {payload}\nResponse: {r.status_code} {r.text[:500]}\n", flush=True)
         j = r.json()
     except Exception:
         return {"http": r.status_code, "text": r.text}
@@ -167,7 +168,7 @@ def get_atr(symbol, period=14, interval="5", limit=100):
         if not candles: return 0.0
         candles.sort(key=lambda c: int(c[0]))
         highs = [float(c[2]) for c in candles]
-        lows  = [float(c[3]) for c in candles]
+        lows = [float(c[3]) for c in candles]
         closes= [float(c[4]) for c in candles]
         trs=[]
         for i in range(1,len(highs)):
@@ -191,11 +192,22 @@ def parse_payload(req):
     }
 
 # =============== 🔔 ВЕБХУК: ТОЛЬКО SCALP ===============
-print("RAW PAYLOAD:", request.data, flush=True)
 @app.route("/webhook", methods=["POST"])
 def webhook():
     if WEBHOOK_SECRET and request.args.get("key", "") != WEBHOOK_SECRET:
         return "forbidden", 403
+
+    # === Расширенное логирование ===
+    try:
+        raw_body = request.get_data(as_text=True)
+        raw_json = request.get_json(silent=True)
+        print("\n================= WEBHOOK RECEIVED =================", flush=True)
+        print("RAW BODY:", raw_body, flush=True)
+        print("PARSED JSON:", raw_json, flush=True)
+        print("ARGS:", dict(request.args), flush=True)
+        print("HEADERS:", {k:v for k,v in request.headers.items()}, flush=True)
+    except Exception as e:
+        print("❌ Error reading request:", e, flush=True)
 
     payload = parse_payload(request)
     typ, ticker, direction, entry = payload["type"], payload["ticker"], payload["direction"], payload["entry"]
@@ -278,6 +290,8 @@ def webhook():
         print("❌ Trade error (SCALP):", e)
 
     return jsonify({"status": "ok"}), 200
+
+# (остальная часть твоего кода — place_order_market_with_limit_tp_sl, monitor_and_cleanup, monitor_closed_trades, heartbeat_loop, backup_log_worker, main, health — остаётся без изменений)
 
 def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
     try:
@@ -509,6 +523,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
