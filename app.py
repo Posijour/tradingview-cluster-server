@@ -193,90 +193,89 @@ def parse_payload(req):
 # =============== 🔔 ВЕБХУК: ТОЛЬКО SCALP ===============
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    if WEBHOOK_SECRET and request.args.get("key","") != WEBHOOK_SECRET:
-        return "forbidden",403
+    if WEBHOOK_SECRET and request.args.get("key", "") != WEBHOOK_SECRET:
+        return "forbidden", 403
 
     payload = parse_payload(request)
     typ, ticker, direction, entry = payload["type"], payload["ticker"], payload["direction"], payload["entry"]
 
     if typ != "SCALP" or not SCALP_ENABLED:
-        return jsonify({"status":"ignored"}),200
-    # === Защита от дублей (по тикеру, любая сторона) ===
-    global last_trade_time
-    if 'last_trade_time' not in globals():
-        last_trade_time = {}
-    
-    now = time.time()
-    cooldown = 60  # секунд, защита от повторных входов по одному символу
-    
-    if ticker in last_trade_time and now - last_trade_time[ticker] < cooldown:
-        wait = int(cooldown - (now - last_trade_time[ticker]))
-        print(f"⏸ {ticker}: пропущен дубль сигнала ({wait}s cooldown)")
-        return jsonify({"status": "duplicate_protection"}), 200
-    
-    last_trade_time[ticker] = now
+        return jsonify({"status": "ignored"}), 200
 
-    # === Блокировка при открытой позиции ===
+    # === Мгновенная защита от дублей (5 секунд) ===
+    global last_signal_lock
+    if 'last_signal_lock' not in globals():
+        last_signal_lock = {}
+
+    key = f"{ticker}_{direction}"
+    now = time.time()
+    cooldown = 5  # сек
+
+    if key in last_signal_lock and (now - last_signal_lock[key]) < cooldown:
+        print(f"🚫 {ticker} {direction}: дубликат в пределах {cooldown}с, пропускаю")
+        return jsonify({"status": "duplicate_ignored"}), 200
+
+    last_signal_lock[key] = now  # регистрируем сигнал мгновенно
+
+    # === Проверка открытой позиции ===
     try:
-        resp = requests.get(f"{BYBIT_BASE_URL}/v5/position/list",params={"category":"linear","symbol":ticker},timeout=5)
-        j=resp.json(); pos_list=((j.get("result")or{}).get("list")or[])
-        open_size=sum(abs(float(p.get("size",0))) for p in pos_list if p.get("symbol")==ticker)
-        if open_size>0:
+        resp = requests.get(f"{BYBIT_BASE_URL}/v5/position/list", params={"category": "linear", "symbol": ticker}, timeout=5)
+        j = resp.json()
+        pos_list = ((j.get("result") or {}).get("list") or [])
+        open_size = sum(abs(float(p.get("size", 0))) for p in pos_list if p.get("symbol") == ticker)
+        if open_size > 0:
             print(f"⏸ {ticker}: позиция уже открыта, сигнал пропущен.")
-            return jsonify({"status":"skipped_open_position"}),200
+            return jsonify({"status": "skipped_open_position"}), 200
     except Exception as e:
         print(f"⚠️ Ошибка проверки позиции {ticker}: {e}")
 
     if not TRADE_ENABLED:
         print(f"🚫 TRADE_DISABLED: {ticker}")
-        return jsonify({"status":"trade_disabled"}),200
+        return jsonify({"status": "trade_disabled"}), 200
 
+    # === Обычная логика входа ===
     try:
-        now=time.time()
-        streak=loss_streak.get(ticker,0); last_reset=loss_streak_reset_time.get(ticker,0)
-        if streak>=MAX_SL_STREAK and (now-last_reset<PAUSE_MINUTES*60):
-            print(f"⏸ {ticker} пауза из-за серии стопов.")
-            return jsonify({"status":"paused_due_to_sl_streak"}),200
+        entry_f = float(entry)
+        atr = get_atr(ticker, period=14, interval="5")
+        atr_base = get_atr(ticker, period=100, interval="5")
+        atr_rel = atr / entry_f if entry_f else 0
+        stop_size = max(entry_f * 0.002, atr * (0.006 / max(atr_rel, 1e-6)))
+        ratio_rel = atr / max(atr_base, 1e-8)
+        rr_ratio = 1.5
+        if ratio_rel > 1.8:
+            rr_ratio *= 1.5
+        elif ratio_rel < 0.7:
+            rr_ratio *= 0.8
+        take_size = stop_size * rr_ratio
 
-        entry_f=float(entry)
-        atr=get_atr(ticker,period=14,interval="5")
-        atr_base=get_atr(ticker,period=100,interval="5")
-        atr_rel=atr/entry_f if entry_f else 0
-        stop_size=max(entry_f*0.002,atr*(0.006/max(atr_rel,1e-6)))
-        ratio_rel=atr/max(atr_base,1e-8)
-        rr_ratio=1.5
-        if ratio_rel>1.8: rr_ratio*=1.5
-        elif ratio_rel<0.7: rr_ratio*=0.8
-        take_size=stop_size*rr_ratio
-
-        if direction=="UP":
-            stop_f=round(entry_f-stop_size,6)
-            target_f=round(entry_f+take_size,6)
-            side="Buy"
+        if direction == "UP":
+            stop_f = round(entry_f - stop_size, 6)
+            target_f = round(entry_f + take_size, 6)
+            side = "Buy"
         else:
-            stop_f=round(entry_f+stop_size,6)
-            target_f=round(entry_f-take_size,6)
-            side="Sell"
+            stop_f = round(entry_f + stop_size, 6)
+            target_f = round(entry_f - take_size, 6)
+            side = "Sell"
 
-        sl_pct=round(abs((entry_f-stop_f)/entry_f)*100,3)
-        tp_pct=round(abs((target_f-entry_f)/entry_f)*100,3)
-        msg=f"⚡ SCALP {ticker} {side} | Entry={entry_f:.6f} Stop={stop_f:.6f} Target={target_f:.6f} (SL={sl_pct}%, TP={tp_pct}%)"
+        sl_pct = round(abs((entry_f - stop_f) / entry_f) * 100, 3)
+        tp_pct = round(abs((target_f - entry_f) / entry_f) * 100, 3)
+        msg = f"⚡ SCALP {ticker} {side} | Entry={entry_f:.6f} Stop={stop_f:.6f} Target={target_f:.6f} (SL={sl_pct}%, TP={tp_pct}%)"
         print(msg)
 
-        set_leverage(ticker,LEVERAGE)
-        qty=calc_qty_from_risk(entry_f,stop_f,MAX_RISK_USDT*0.5,ticker)
-        if qty<=0:
+        set_leverage(ticker, LEVERAGE)
+        qty = calc_qty_from_risk(entry_f, stop_f, MAX_RISK_USDT * 0.5, ticker)
+        if qty <= 0:
             print("⚠️ Qty <= 0 — торговля пропущена")
-            return jsonify({"status":"skipped"}),200
+            return jsonify({"status": "skipped"}), 200
 
-        place_order_market_with_limit_tp_sl(ticker,side,qty,target_f,stop_f)
+        place_order_market_with_limit_tp_sl(ticker, side, qty, target_f, stop_f)
         send_telegram(f"⚡ *AUTO-TRADE (SCALP)*\n{ticker} {side}\nEntry~{entry_f}\nTP:{target_f}\nSL:{stop_f}")
-        log_signal(ticker,direction,"1m","SCALP",entry_f,stop_f,target_f)
+        log_signal(ticker, direction, "1m", "SCALP", entry_f, stop_f, target_f)
 
     except Exception as e:
         print("❌ Trade error (SCALP):", e)
 
-    return jsonify({"status":"ok"}),200
+    return jsonify({"status": "ok"}), 200
 
 def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
     try:
@@ -517,5 +516,6 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
