@@ -295,59 +295,40 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
         entry_resp = bybit_post("/v5/order/create", entry_payload)
         print("✅ Entry placed:", entry_resp)
 
-        # === 2. Ждём появления позиции в списке ===
+        # === 2. Ордера выхода ===
         exit_side = "Sell" if side == "Buy" else "Buy"
-        position_found = False
-        for i in range(10):  # максимум 10 попыток (5 сек)
-            time.sleep(0.5)
-            try:
-                r = requests.get(f"{BYBIT_BASE_URL}/v5/position/list",
-                                 params={"category": "linear", "symbol": symbol},
-                                 timeout=5).json()
-                pos_list = ((r.get("result") or {}).get("list") or [])
-                pos = next((p for p in pos_list if abs(float(p.get("size", 0))) > 0), None)
-                if pos:
-                    position_found = True
-                    print(f"✅ Position detected after {i+1} tries ({symbol}, size={pos.get('size')})")
-                    break
-            except Exception as e:
-                print(f"⚠️ Waiting for position {symbol}: {e}")
 
-        if not position_found:
-            print(f"❌ Position for {symbol} not found — TPSL not attached")
-            return
-
-        # === 3. Вешаем TP/SL, с повторами при "position not exists" ===
-        set_tpsl_payload = {
+        # TP — лимитный reduceOnly
+        tp_payload = {
             "category": "linear",
             "symbol": symbol,
-            "tpslMode": "Full",
-            "takeProfit": str(tp_price),
-            "tpOrderType": "Limit",
-            "tpTimeInForce": "GoodTillCancel",
-            "stopLoss": str(sl_price),
-            "slTriggerBy": "LastPrice"
+            "side": exit_side,
+            "orderType": "Limit",
+            "qty": str(qty),
+            "price": str(tp_price),
+            "timeInForce": "GoodTillCancel",
+            "reduceOnly": True
         }
+        tp_resp = bybit_post("/v5/order/create", tp_payload)
+        print("✅ TP placed:", tp_resp)
 
-        for attempt in range(3):
-            tpsl_resp = bybit_post("/v5/position/set-tpsl", set_tpsl_payload)
-            ret_msg = (tpsl_resp or {}).get("retMsg", "")
-            ret_code = (tpsl_resp or {}).get("retCode", 0)
+        # SL — триггерный market reduceOnly
+        sl_payload = {
+            "category": "linear",
+            "symbol": symbol,
+            "side": exit_side,
+            "orderType": "Market",
+            "qty": str(qty),
+            "triggerPrice": str(sl_price),
+            "triggerBy": "LastPrice",
+            "reduceOnly": True,
+            "closeOnTrigger": True,
+            "timeInForce": "GoodTillCancel"
+        }
+        sl_resp = bybit_post("/v5/order/create", sl_payload)
+        print("✅ SL placed:", sl_resp)
 
-            if ret_code == 0:
-                print(f"✅ TPSL successfully attached (try {attempt+1})")
-                break
-            elif "position not exists" in ret_msg.lower():
-                print(f"⚠️ TPSL attach failed (no position yet), retrying... ({attempt+1}/3)")
-                time.sleep(1.2)
-            else:
-                print(f"⚠️ TPSL attach failed ({attempt+1}/3): {ret_msg}")
-                break
-        else:
-            print("❌ TPSL not attached after retries")
-
-        print("🎯 Entry + TPSL done (position-linked)")
-        # Резервная чистка на всякий случай
+        print("🎯 Entry + TP/SL placed (reduceOnly mode)")
         threading.Thread(target=monitor_and_cleanup, args=(symbol,), daemon=True).start()
 
     except Exception as e:
@@ -532,6 +513,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
