@@ -281,7 +281,7 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
     try:
         print(f"🚀 NEW TRADE {symbol} {side} qty={qty}")
 
-        # === 1. Маркет-вход ===
+        # 1. Вход по рынку
         entry_payload = {
             "category": "linear",
             "symbol": symbol,
@@ -295,40 +295,63 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
         entry_resp = bybit_post("/v5/order/create", entry_payload)
         print("✅ Entry placed:", entry_resp)
 
-        # === 2. Ордера выхода ===
         exit_side = "Sell" if side == "Buy" else "Buy"
 
-        # TP — лимитный reduceOnly
-        tp_payload = {
-            "category": "linear",
-            "symbol": symbol,
-            "side": exit_side,
-            "orderType": "Limit",
-            "qty": str(qty),
-            "price": str(tp_price),
-            "timeInForce": "GoodTillCancel",
-            "reduceOnly": True
-        }
-        tp_resp = bybit_post("/v5/order/create", tp_payload)
-        print("✅ TP placed:", tp_resp)
+        # 2. Ждём подтверждения позиции
+        for attempt in range(10):
+            time.sleep(0.6)
+            try:
+                r = requests.get(f"{BYBIT_BASE_URL}/v5/position/list",
+                                 params={"category": "linear", "symbol": symbol},
+                                 timeout=5).json()
+                pos_list = ((r.get("result") or {}).get("list") or [])
+                active = next((p for p in pos_list if abs(float(p.get("size", 0))) > 0), None)
+                if active:
+                    print(f"✅ Position ready after {attempt+1} checks (size={active.get('size')})")
+                    break
+            except Exception as e:
+                print(f"⚠️ Waiting for position: {e}")
+        else:
+            print(f"❌ Position for {symbol} not confirmed — aborting TP/SL")
+            return
 
-        # SL — триггерный market reduceOnly
-        sl_payload = {
-            "category": "linear",
-            "symbol": symbol,
-            "side": exit_side,
-            "orderType": "Market",
-            "qty": str(qty),
-            "triggerPrice": str(sl_price),
-            "triggerBy": "LastPrice",
-            "reduceOnly": True,
-            "closeOnTrigger": True,
-            "timeInForce": "GoodTillCancel"
-        }
-        sl_resp = bybit_post("/v5/order/create", sl_payload)
-        print("✅ SL placed:", sl_resp)
+        # 3. Ставим TP и SL с повторными попытками
+        for retry in range(5):
+            tp_payload = {
+                "category": "linear",
+                "symbol": symbol,
+                "side": exit_side,
+                "orderType": "Limit",
+                "qty": str(qty),
+                "price": str(tp_price),
+                "timeInForce": "GoodTillCancel",
+                "reduceOnly": True
+            }
+            tp_resp = bybit_post("/v5/order/create", tp_payload)
+            sl_payload = {
+                "category": "linear",
+                "symbol": symbol,
+                "side": exit_side,
+                "orderType": "Market",
+                "qty": str(qty),
+                "triggerPrice": str(sl_price),
+                "triggerBy": "LastPrice",
+                "reduceOnly": True,
+                "closeOnTrigger": True,
+                "timeInForce": "GoodTillCancel"
+            }
+            sl_resp = bybit_post("/v5/order/create", sl_payload)
 
-        print("🎯 Entry + TP/SL placed (reduceOnly mode)")
+            if tp_resp.get("retCode") == 0 and sl_resp.get("retCode") == 0:
+                print(f"✅ TP/SL successfully attached (try {retry+1})")
+                break
+            else:
+                print(f"⚠️ Failed to attach TP/SL (try {retry+1}), retrying...")
+                time.sleep(1.5)
+        else:
+            print(f"❌ {symbol}: TP/SL still not attached after 5 retries")
+
+        print("🎯 Entry complete + background cleanup started")
         threading.Thread(target=monitor_and_cleanup, args=(symbol,), daemon=True).start()
 
     except Exception as e:
@@ -513,6 +536,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
