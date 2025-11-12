@@ -201,6 +201,15 @@ def webhook():
 
     if typ != "SCALP" or not SCALP_ENABLED:
         return jsonify({"status":"ignored"}),200
+    # === Защита от дублей ===
+    global last_trade_time
+    if 'last_trade_time' not in globals():
+        last_trade_time = {}
+    now = time.time()
+    if ticker in last_trade_time and now - last_trade_time[ticker] < 60:
+        print(f"⏸ {ticker}: пропущен дубль сигнала (время защиты)")
+        return jsonify({"status":"duplicate_protection"}),200
+    last_trade_time[ticker] = now
 
     # === Блокировка при открытой позиции ===
     try:
@@ -503,3 +512,4 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
