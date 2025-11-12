@@ -354,35 +354,31 @@ def cancel_all_orders(symbol: str, retries: int = 3):
 
 def monitor_and_cleanup(symbol: str, check_every: float = 3.0, max_checks: int = 5000):
     """Проверяет размер позиции; как только он ~0 — удаляет все ордера."""
-    tiny = _min_qty(symbol) * 0.6  # всё, что меньше минимума на бирже, считаем нулём
+    tiny = _min_qty(symbol) * 0.6
     for i in range(max_checks):
         try:
             time.sleep(check_every)
-            resp = requests.get(
-                f"{BYBIT_BASE_URL}/v5/position/list",
-                params={"category": "linear", "symbol": symbol},
-                timeout=5
-            )
 
-            # Проверка на пустой или некорректный ответ
-            if not resp.text.strip():
-                print(f"⚠️ monitor_and_cleanup {symbol}: пустой ответ от API ({resp.status_code})")
+            # --- авторизованный запрос ---
+            path = "/v5/position/list"
+            query = f"category=linear&symbol={symbol}"
+            headers, _ = _bybit_sign({}, method="GET", query_string=query)
+            resp = requests.get(f"{BYBIT_BASE_URL}{path}?{query}", headers=headers, timeout=5)
+            if not resp.text:
+                print(f"⚠️ monitor_and_cleanup {symbol}: пустой ответ от API")
                 continue
-
             r = resp.json()
+
             pos_list = ((r.get("result") or {}).get("list") or [])
             size = sum(abs(float(p.get("size", 0))) for p in pos_list if p.get("symbol") == symbol)
 
             if size <= tiny:
-                # даём бирже добить статусы и снимаем всё
                 time.sleep(1.0)
                 cancel_all_orders(symbol)
                 print(f"✅ {symbol}: position={size} ≤ {tiny}, orders cleaned")
                 return
-
         except Exception as e:
             print(f"⚠️ monitor_and_cleanup {symbol}: {e}")
-
     print(f"⏳ {symbol}: cleanup timed out (still some size or API slow)")
 
 # =============== 🔍 MONITOR CLOSED TRADES (тихий, без Telegram) ===============
@@ -491,6 +487,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
