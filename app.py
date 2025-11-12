@@ -319,7 +319,7 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
             "orderType": "Limit",
             "qty": str(qty),
             "price": str(tp_price),
-            "timeInForce": "GoodTillCancel",
+            "timeInForce": "PostOnly",  # заменено
             "reduceOnly": True
         }
         tp_resp = bybit_post("/v5/order/create", tp_payload)
@@ -333,9 +333,9 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
             "qty": str(qty),
             "triggerPrice": str(sl_price),
             "triggerBy": "LastPrice",
+            "triggerDirection": 1 if exit_side == "Buy" else 2,  # добавлено
             "reduceOnly": True,
-            "closeOnTrigger": True,
-            "timeInForce": "GoodTillCancel"
+            "closeOnTrigger": True
         }
         sl_resp = bybit_post("/v5/order/create", sl_payload)
         print("SL RESPONSE:", json.dumps(sl_resp, indent=2))
@@ -523,6 +523,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
