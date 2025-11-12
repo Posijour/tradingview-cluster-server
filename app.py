@@ -279,100 +279,54 @@ def webhook():
 
 def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
     try:
-        print(f"🚀 NEW TRADE {symbol} {side} qty={qty}")
+        print(f"\n🚀 NEW TRADE {symbol} {side} qty={qty}")
 
-        # === 1. Маркет-вход ===
         entry_payload = {
             "category": "linear",
             "symbol": symbol,
             "side": side,
             "orderType": "Market",
             "qty": str(qty),
-            "timeInForce": "IOC",
-            "reduceOnly": False,
-            "closeOnTrigger": False
+            "timeInForce": "IOC"
         }
         entry_resp = bybit_post("/v5/order/create", entry_payload)
-        print("✅ Entry placed:", entry_resp)
+        print("ENTRY RESPONSE:", json.dumps(entry_resp, indent=2))
 
-        # === 2. Ждём, пока позиция реально появится ===
-        position_ready = None
-        for i in range(20):  # ждём до 12 сек
-            time.sleep(0.6)
-            r = requests.get(
-                f"{BYBIT_BASE_URL}/v5/position/list",
-                params={"category": "linear", "symbol": symbol},
-                timeout=5,
-            ).json()
-            pos_list = ((r.get("result") or {}).get("list") or [])
-            active = next((p for p in pos_list if abs(float(p.get("size", 0))) > 0), None)
-            if active:
-                position_ready = active
-                print(f"✅ Position confirmed after {i+1} checks, size={active.get('size')}")
-                break
-        if not position_ready:
-            print(f"❌ Position not detected for {symbol} — aborting TP/SL attach.")
-            return
+        time.sleep(2)  # пусть сервер опомнится
 
-        # === 3. Основной способ — через /v5/position/set-tpsl ===
-        tpsl_payload = {
+        exit_side = "Sell" if side == "Buy" else "Buy"
+
+        tp_payload = {
             "category": "linear",
             "symbol": symbol,
-            "tpslMode": "Full",
-            "takeProfit": str(tp_price),
-            "tpOrderType": "Limit",
-            "tpTimeInForce": "GoodTillCancel",
-            "stopLoss": str(sl_price),
-            "slTriggerBy": "LastPrice"
+            "side": exit_side,
+            "orderType": "Limit",
+            "qty": str(qty),
+            "price": str(tp_price),
+            "timeInForce": "GoodTillCancel",
+            "reduceOnly": True
         }
-        success = False
-        for attempt in range(3):
-            tpsl_resp = bybit_post("/v5/position/set-tpsl", tpsl_payload)
-            msg = (tpsl_resp or {}).get("retMsg", "")
-            if (tpsl_resp or {}).get("retCode", 0) == 0:
-                print(f"✅ TPSL successfully attached via set-tpsl (try {attempt+1})")
-                success = True
-                break
-            else:
-                print(f"⚠️ TPSL attach failed (try {attempt+1}): {msg}")
-                time.sleep(1.5)
+        tp_resp = bybit_post("/v5/order/create", tp_payload)
+        print("TP RESPONSE:", json.dumps(tp_resp, indent=2))
 
-        # === 4. Резервный способ (если Bybit опять глючит) ===
-        if not success:
-            print(f"⚠️ Falling back to manual reduceOnly TP/SL for {symbol}")
-            exit_side = "Sell" if side == "Buy" else "Buy"
-
-            tp_payload = {
-                "category": "linear",
-                "symbol": symbol,
-                "side": exit_side,
-                "orderType": "Limit",
-                "qty": str(qty),
-                "price": str(tp_price),
-                "timeInForce": "GoodTillCancel",
-                "reduceOnly": True
-            }
-            bybit_post("/v5/order/create", tp_payload)
-
-            sl_payload = {
-                "category": "linear",
-                "symbol": symbol,
-                "side": exit_side,
-                "orderType": "Market",
-                "qty": str(qty),
-                "triggerPrice": str(sl_price),
-                "triggerBy": "LastPrice",
-                "reduceOnly": True,
-                "closeOnTrigger": True,
-                "timeInForce": "GoodTillCancel"
-            }
-            bybit_post("/v5/order/create", sl_payload)
-
-        print("🎯 Entry complete + cleanup thread started")
-        threading.Thread(target=monitor_and_cleanup, args=(symbol,), daemon=True).start()
+        sl_payload = {
+            "category": "linear",
+            "symbol": symbol,
+            "side": exit_side,
+            "orderType": "Market",
+            "qty": str(qty),
+            "triggerPrice": str(sl_price),
+            "triggerBy": "LastPrice",
+            "reduceOnly": True,
+            "closeOnTrigger": True,
+            "timeInForce": "GoodTillCancel"
+        }
+        sl_resp = bybit_post("/v5/order/create", sl_payload)
+        print("SL RESPONSE:", json.dumps(sl_resp, indent=2))
 
     except Exception as e:
         print("💀 place_order_market_with_limit_tp_sl error:", e)
+
 
 # =============== 🧹 ЧИСТКА СТОПОВ ПОСЛЕ ЗАКРЫТИЯ ===============
 def _min_qty(symbol: str) -> float:
@@ -553,6 +507,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
