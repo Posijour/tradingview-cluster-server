@@ -381,7 +381,9 @@ def monitor_and_cleanup(symbol: str, check_every: float = 3.0, max_checks: int =
                 cancel_all_orders(symbol)
                 if no_position_count >= 3:
                     print(f"✅ {symbol}: все ордера гарантированно очищены")
+                    cancel_all_orders(symbol)  # финальная зачистка после выхода
                     return
+
                 time.sleep(1.5)
             else:
                 no_position_count = 0  # сброс если снова есть объём
@@ -415,9 +417,13 @@ def monitor_closed_trades():
                 key=f"{ticker}_{direction}_{entry}"
                 if key in checked: continue
                 checked.add(key)
-                pos=requests.get(f"{BYBIT_BASE_URL}/v5/position/list",params={"category":"linear","symbol":ticker},timeout=5).json()
-                pos_list=((pos.get("result")or{}).get("list")or[])
-                size=sum(abs(float(p.get("size",0))) for p in pos_list if p.get("symbol")==ticker)
+                resp = requests.get(f"{BYBIT_BASE_URL}/v5/position/list", params={"category":"linear","symbol":ticker}, timeout=5)
+                if not resp.text:
+                    print(f"⚠️ monitor_closed_trades: пустой ответ по {ticker}, пропускаю итерацию")
+                    continue
+                pos = resp.json()
+                pos_list = ((pos.get("result") or {}).get("list") or [])
+                size = sum(abs(float(p.get("size",0))) for p in pos_list if p.get("symbol")==ticker)
                 if size>0: continue
                 hist=requests.get(f"{BYBIT_BASE_URL}/v5/order/history",params={"category":"linear","symbol":ticker,"limit":10},timeout=5).json()
                 orders=((hist.get("result")or{}).get("list")or[])
@@ -497,6 +503,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
