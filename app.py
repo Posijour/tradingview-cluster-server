@@ -353,13 +353,15 @@ def cancel_all_orders(symbol: str, retries: int = 3):
             time.sleep(1.2)
 
 def monitor_and_cleanup(symbol: str, check_every: float = 3.0, max_checks: int = 5000):
-    """Проверяет размер позиции; как только он ~0 — удаляет все ордера."""
+    """Проверяет размер позиции; как только он ~0 — удаляет все ордера окончательно."""
     tiny = _min_qty(symbol) * 0.6
+    no_position_count = 0
+
     for i in range(max_checks):
         try:
             time.sleep(check_every)
 
-            # --- авторизованный запрос ---
+            # Авторизованный запрос позиций
             path = "/v5/position/list"
             query = f"category=linear&symbol={symbol}"
             headers, _ = _bybit_sign({}, method="GET", query_string=query)
@@ -372,14 +374,22 @@ def monitor_and_cleanup(symbol: str, check_every: float = 3.0, max_checks: int =
             pos_list = ((r.get("result") or {}).get("list") or [])
             size = sum(abs(float(p.get("size", 0))) for p in pos_list if p.get("symbol") == symbol)
 
+            # если позиции нет, увеличиваем счётчик
             if size <= tiny:
-                time.sleep(1.0)
+                no_position_count += 1
+                print(f"🔍 {symbol}: позиция нулевая ({size}), попытка чистки {no_position_count}/3")
                 cancel_all_orders(symbol)
-                print(f"✅ {symbol}: position={size} ≤ {tiny}, orders cleaned")
-                return
+                if no_position_count >= 3:
+                    print(f"✅ {symbol}: все ордера гарантированно очищены")
+                    return
+                time.sleep(1.5)
+            else:
+                no_position_count = 0  # сброс если снова есть объём
+
         except Exception as e:
             print(f"⚠️ monitor_and_cleanup {symbol}: {e}")
-    print(f"⏳ {symbol}: cleanup timed out (still some size or API slow)")
+
+    print(f"⏳ {symbol}: cleanup timed out (возможно, позиция не закрыта)")
 
 # =============== 🔍 MONITOR CLOSED TRADES (тихий, без Telegram) ===============
 def monitor_closed_trades():
@@ -487,6 +497,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
