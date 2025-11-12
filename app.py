@@ -375,6 +375,7 @@ def cancel_all_orders(symbol: str, retries: int = 3):
 
 def monitor_and_cleanup(symbol: str, check_every: float = 3.0, max_checks: int = 5000):
     """Проверяет размер позиции; как только он ~0 — удаляет все ордера окончательно."""
+    time.sleep(8)  # ждём перед первой проверкой, чтобы Bybit обновил позицию
     tiny = _min_qty(symbol) * 0.6
     no_position_count = 0
 
@@ -524,6 +525,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
