@@ -6,6 +6,8 @@ from collections import deque
 from flask import Flask, request, jsonify
 
 # =============== 🔧 НАСТРОЙКИ ===============
+DEBUG = False
+
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID", "766363011")
 
@@ -110,12 +112,15 @@ def bybit_post(path: str, payload: dict) -> dict:
     headers, body = _bybit_sign(payload)
     r = requests.post(url, headers=headers, data=body, timeout=10)
     try:
-        print(f"\n📡 Bybit POST {path}\nPayload: {payload}\nResponse: {r.status_code} {r.text[:500]}\n", flush=True)
+        if DEBUG:
+            print(f"\n📡 Bybit POST {path}\nPayload: {payload}\nResponse: {r.status_code} {r.text[:500]}\n", flush=True)
         j = r.json()
     except Exception:
         return {"http": r.status_code, "text": r.text}
     if j.get("retCode", 0) != 0:
         print("❌ Bybit error:", j)
+    elif DEBUG:
+        print(f"✅ Bybit OK: {path}")       
     return j
 
 def _decimals_from_step(step_str: str) -> int:
@@ -306,8 +311,8 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
             "timeInForce": "IOC"
         }
         entry_resp = bybit_post("/v5/order/create", entry_payload)
-        print("ENTRY RESPONSE:", json.dumps(entry_resp, indent=2))
-
+        if DEBUG: 
+            print("ENTRY RESPONSE:", json.dumps(entry_resp, indent=2))
         time.sleep(2)  # пусть сервер опомнится
 
         exit_side = "Sell" if side == "Buy" else "Buy"
@@ -323,7 +328,7 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
             "reduceOnly": True
         }
         tp_resp = bybit_post("/v5/order/create", tp_payload)
-        print("TP RESPONSE:", json.dumps(tp_resp, indent=2))
+        if DEBUG: print("TP RESPONSE:", json.dumps(tp_resp, indent=2))
 
         sl_payload = {
             "category": "linear",
@@ -338,7 +343,7 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
             "closeOnTrigger": True
         }
         sl_resp = bybit_post("/v5/order/create", sl_payload)
-        print("SL RESPONSE:", json.dumps(sl_resp, indent=2))
+        if DEBUG: print("SL RESPONSE:", json.dumps(sl_resp, indent=2))
         threading.Thread(target=monitor_and_cleanup, args=(symbol,), daemon=True).start()
         
     except Exception as e:
@@ -525,17 +530,3 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
