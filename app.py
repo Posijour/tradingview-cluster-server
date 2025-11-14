@@ -258,9 +258,9 @@ def webhook():
         atr = get_atr(ticker, period=14, interval="5")
         atr_base = get_atr(ticker, period=100, interval="5")
         atr_rel = atr / entry_f if entry_f else 0
-        stop_size = max(entry_f * 0.002, atr * (0.006 / max(atr_rel, 1e-6)))
+        stop_size = max(entry_f * 0.002, atr * (0.003 / max(atr_rel, 1e-6)))
         ratio_rel = atr / max(atr_base, 1e-8)
-        rr_ratio = 1.5
+        rr_ratio = 2.4
         if ratio_rel > 1.8:
             rr_ratio *= 1.5
         elif ratio_rel < 0.7:
@@ -530,3 +530,4 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
