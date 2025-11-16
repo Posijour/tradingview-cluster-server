@@ -308,7 +308,6 @@ def webhook():
         log_signal(ticker, direction, "1m", "SCALP", entry_f, stop_f, target_f)
 
         # === ACTIVATE GLOBAL COOLDOWN ===
-        global trade_global_cooldown_until
         trade_global_cooldown_until = time.time() + 180  # 3 minutes
         print(f"🕒 GLOBAL COOLDOWN ACTIVATED for 180s due to {ticker} {direction}")
         send_telegram(f"🕒 *GLOBAL COOLDOWN ACTIVATED*\n180 seconds pause")
@@ -552,6 +551,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
