@@ -32,7 +32,7 @@ loss_streak = {}
 loss_streak_reset_time = {}
 
 # === GLOBAL COOLDOWN (3 MINUTES) ===
-trade_global_cooldown_until = 0
+global trade_global_cooldown_until = 0
 
 LOG_FILE = "/tmp/signals_log.csv"
 
@@ -552,6 +552,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
