@@ -31,6 +31,9 @@ PAUSE_MINUTES = 30
 loss_streak = {}
 loss_streak_reset_time = {}
 
+# === GLOBAL COOLDOWN (3 MINUTES) ===
+trade_global_cooldown_until = 0
+
 LOG_FILE = "/tmp/signals_log.csv"
 
 app = Flask(__name__)
@@ -221,6 +224,19 @@ def webhook():
     if typ != "SCALP" or not SCALP_ENABLED:
         return jsonify({"status": "ignored"}), 200
 
+    # === CHECK GLOBAL 3-MIN COOLDOWN ===
+    global trade_global_cooldown_until
+    now = time.time()
+
+    if now < trade_global_cooldown_until:
+        remaining = int(trade_global_cooldown_until - now)
+        print(f"⛔ GLOBAL BLOCK: {remaining}s remaining. Signal blocked for {ticker} {direction}")
+        
+        send_telegram(f"⛔ *TRADE BLOCKED*\n{ticker} {direction}\nCooldown {remaining}s")
+        
+        log_signal(ticker, direction, payload['tf'], "BLOCKED")
+        return jsonify({"status": "blocked"}), 200
+
     # === Мгновенная защита от дублей (5 секунд) ===
     global last_signal_lock
     if 'last_signal_lock' not in globals():
@@ -290,6 +306,13 @@ def webhook():
         place_order_market_with_limit_tp_sl(ticker, side, qty, target_f, stop_f)
         send_telegram(f"⚡ *AUTO-TRADE (SCALP)*\n{ticker} {side}\nEntry~{entry_f}\nTP:{target_f}\nSL:{stop_f}")
         log_signal(ticker, direction, "1m", "SCALP", entry_f, stop_f, target_f)
+        place_order_market_with_limit_tp_sl(ticker, side, qty, target_f, stop_f)
+
+        # === ACTIVATE GLOBAL COOLDOWN ===
+        global trade_global_cooldown_until
+        trade_global_cooldown_until = time.time() + 180  # 3 minutes
+        print(f"🕒 GLOBAL COOLDOWN ACTIVATED for 180s due to {ticker} {direction}")
+        send_telegram(f"🕒 *GLOBAL COOLDOWN ACTIVATED*\n180 seconds pause")
 
     except Exception as e:
         print("❌ Trade error (SCALP):", e)
@@ -530,4 +553,5 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
