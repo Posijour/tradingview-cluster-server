@@ -30,9 +30,7 @@ PAUSE_MINUTES = 30
 
 loss_streak = {}
 loss_streak_reset_time = {}
-
-# === GLOBAL COOLDOWN (3 MINUTES) ===
-global trade_global_cooldown_until = 0
+trade_global_cooldown_until = 0
 
 LOG_FILE = "/tmp/signals_log.csv"
 
@@ -202,6 +200,8 @@ def parse_payload(req):
 # =============== 🔔 ВЕБХУК: ТОЛЬКО SCALP ===============
 @app.route("/webhook", methods=["POST"])
 def webhook():
+    global trade_global_cooldown_until   # ← ЭТОТ ПАРЕНЬ ДОЛЖЕН БЫТЬ ВОТ ТУТ
+
     if WEBHOOK_SECRET and request.args.get("key", "") != WEBHOOK_SECRET:
         return "forbidden", 403
 
@@ -552,6 +552,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
