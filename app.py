@@ -306,7 +306,6 @@ def webhook():
         place_order_market_with_limit_tp_sl(ticker, side, qty, target_f, stop_f)
         send_telegram(f"⚡ *AUTO-TRADE (SCALP)*\n{ticker} {side}\nEntry~{entry_f}\nTP:{target_f}\nSL:{stop_f}")
         log_signal(ticker, direction, "1m", "SCALP", entry_f, stop_f, target_f)
-        place_order_market_with_limit_tp_sl(ticker, side, qty, target_f, stop_f)
 
         # === ACTIVATE GLOBAL COOLDOWN ===
         global trade_global_cooldown_until
@@ -553,5 +552,6 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
