@@ -24,6 +24,9 @@ SCALP_ENABLED = os.getenv("SCALP_ENABLED", "true").lower() == "true"
 MAX_RISK_USDT = float(os.getenv("MAX_RISK_USDT", "1"))
 LEVERAGE = float(os.getenv("LEVERAGE", "20"))
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
+# БАЗОВЫЕ НАСТРОЙКИ SL/TP ДЛЯ SCALP
+BASE_SL_PCT = 0.003   # 0.3% от цены входа
+RR_RATIO    = 2.4     # TP = SL * 2.4
 
 MAX_SL_STREAK = 3
 PAUSE_MINUTES = 30
@@ -165,26 +168,6 @@ def set_leverage(symbol, leverage):
     except Exception as e:
         print("❌ Leverage set exception:", e)
 
-def get_atr(symbol, period=14, interval="5", limit=100):
-    try:
-        url = f"{BYBIT_BASE_URL}/v5/market/kline"
-        params = {"category": "linear", "symbol": symbol, "interval": interval, "limit": limit}
-        r = requests.get(url, params=params, timeout=5).json()
-        candles = (((r or {}).get("result") or {}).get("list") or [])
-        if not candles: return 0.0
-        candles.sort(key=lambda c: int(c[0]))
-        highs = [float(c[2]) for c in candles]
-        lows = [float(c[3]) for c in candles]
-        closes= [float(c[4]) for c in candles]
-        trs=[]
-        for i in range(1,len(highs)):
-            tr=max(highs[i]-lows[i],abs(highs[i]-closes[i-1]),abs(lows[i]-closes[i-1])); trs.append(tr)
-        if not trs: return 0.0
-        lookback=min(period,len(trs))
-        return sum(trs[-lookback:])/lookback
-    except Exception:
-        return 0.0
-
 # =============== 🧠 PARSE PAYLOAD ===============
 def parse_payload(req):
     data = request.get_json(silent=True) or {}
@@ -268,52 +251,62 @@ def webhook():
         print(f"🚫 TRADE_DISABLED: {ticker}")
         return jsonify({"status": "trade_disabled"}), 200
 
-    # === Обычная логика входа ===
+    # === Обычная логика входа (только базовые SL/TP) ===
     try:
         entry_f = float(entry)
-        atr = get_atr(ticker, period=14, interval="5")
-        atr_base = get_atr(ticker, period=100, interval="5")
-        atr_rel = atr / entry_f if entry_f else 0
-        stop_size = max(entry_f * 0.002, atr * (0.003 / max(atr_rel, 1e-6)))
-        ratio_rel = atr / max(atr_base, 1e-8)
-        rr_ratio = 2.4
-        if ratio_rel > 1.8:
-            rr_ratio *= 1.5
-        elif ratio_rel < 0.7:
-            rr_ratio *= 0.8
-        take_size = stop_size * rr_ratio
+
+        # 0.3% стоп от цены входа
+        stop_size = entry_f * BASE_SL_PCT
+
+        # TP = SL * 2.4
+        take_size = stop_size * RR_RATIO
 
         if direction == "UP":
-            stop_f = round(entry_f - stop_size, 6)
+            stop_f   = round(entry_f - stop_size, 6)
             target_f = round(entry_f + take_size, 6)
             side = "Buy"
         else:
-            stop_f = round(entry_f + stop_size, 6)
+            stop_f   = round(entry_f + stop_size, 6)
             target_f = round(entry_f - take_size, 6)
             side = "Sell"
 
+        # Просто для инфы в лог/телегу
         sl_pct = round(abs((entry_f - stop_f) / entry_f) * 100, 3)
         tp_pct = round(abs((target_f - entry_f) / entry_f) * 100, 3)
-        msg = f"⚡ SCALP {ticker} {side} | Entry={entry_f:.6f} Stop={stop_f:.6f} Target={target_f:.6f} (SL={sl_pct}%, TP={tp_pct}%)"
+        msg = (
+            f"⚡ SCALP {ticker} {side} | "
+            f"Entry={entry_f:.6f} Stop={stop_f:.6f} Target={target_f:.6f} "
+            f"(SL={sl_pct}%, TP={tp_pct}%)"
+        )
         print(msg)
 
         set_leverage(ticker, LEVERAGE)
+
+        # Риск всё ещё считается как раньше, только по нашему фиксированному стопу
         qty = calc_qty_from_risk(entry_f, stop_f, MAX_RISK_USDT * 0.5, ticker)
         if qty <= 0:
             print("⚠️ Qty <= 0 — торговля пропущена")
             return jsonify({"status": "skipped"}), 200
 
         place_order_market_with_limit_tp_sl(ticker, side, qty, target_f, stop_f)
-        send_telegram(f"⚡ *AUTO-TRADE (SCALP)*\n{ticker} {side}\nEntry~{entry_f}\nTP:{target_f}\nSL:{stop_f}")
+
+        send_telegram(
+            f"⚡ *AUTO-TRADE (SCALP)*\n"
+            f"{ticker} {side}\n"
+            f"Entry~{entry_f}\n"
+            f"TP:{target_f}\n"
+            f"SL:{stop_f}"
+        )
         log_signal(ticker, direction, "1m", "SCALP", entry_f, stop_f, target_f)
 
         # === ACTIVATE GLOBAL COOLDOWN ===
         trade_global_cooldown_until = time.time() + 180  # 3 minutes
         print(f"🕒 GLOBAL COOLDOWN ACTIVATED for 180s due to {ticker} {direction}")
-        send_telegram(f"🕒 *GLOBAL COOLDOWN ACTIVATED*\n180 seconds pause")
+        send_telegram("🕒 *GLOBAL COOLDOWN ACTIVATED*\n180 seconds pause")
 
     except Exception as e:
         print("❌ Trade error (SCALP):", e)
+
 
     return jsonify({"status": "ok"}), 200
 
@@ -551,9 +544,3 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
-
-
-
-
-
-
