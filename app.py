@@ -316,6 +316,7 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
     try:
         print(f"\n🚀 NEW TRADE {symbol} {side} qty={qty}")
 
+        # === 1. MARKET ENTRY ===
         entry_payload = {
             "category": "linear",
             "symbol": symbol,
@@ -325,12 +326,12 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
             "timeInForce": "IOC"
         }
         entry_resp = bybit_post("/v5/order/create", entry_payload)
-        if DEBUG: 
-            print("ENTRY RESPONSE:", json.dumps(entry_resp, indent=2))
-        time.sleep(2)  # пусть сервер опомнится
+        time.sleep(1.2)
 
+        # Определяем сторону выхода
         exit_side = "Sell" if side == "Buy" else "Buy"
 
+        # === 2. LIMIT TAKE-PROFIT ===
         tp_payload = {
             "category": "linear",
             "symbol": symbol,
@@ -338,12 +339,34 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
             "orderType": "Limit",
             "qty": str(qty),
             "price": str(tp_price),
-            "timeInForce": "PostOnly",  # заменено
+            "timeInForce": "PostOnly",
             "reduceOnly": True
         }
         tp_resp = bybit_post("/v5/order/create", tp_payload)
-        if DEBUG: print("TP RESPONSE:", json.dumps(tp_resp, indent=2))
 
+        # === 3. Актуальная рыночная цена для проверки SL ===
+        ticker_info = requests.get(
+            f"{BYBIT_BASE_URL}/v5/market/tickers",
+            params={"category": "linear", "symbol": symbol},
+            timeout=5
+        ).json()
+
+        last_price = float(ticker_info["result"]["list"][0]["lastPrice"])
+
+        # === 4. Коррекция SL, если он на неправильной стороне ===
+        # (та самая магия, которая спасает от всех ошибок)
+        if exit_side == "Sell":  
+            # мы закрываем LONG → SL должен быть НИЖЕ цены
+            if sl_price >= last_price:
+                sl_price = last_price * 0.999  # чуть ниже рынка
+        else:
+            # мы закрываем SHORT → SL должен быть ВЫШЕ цены
+            if sl_price <= last_price:
+                sl_price = last_price * 1.001  # чуть выше рынка
+
+        sl_price = round(sl_price, 6)
+
+        # === 5. STOP-MARKET SL (Bybit-совместимый) ===
         sl_payload = {
             "category": "linear",
             "symbol": symbol,
@@ -352,17 +375,16 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
             "qty": str(qty),
             "triggerPrice": str(sl_price),
             "triggerBy": "LastPrice",
-            "triggerDirection": 1 if exit_side == "Buy" else 2,  # добавлено
+            "triggerDirection": 1 if exit_side == "Buy" else 2,
             "reduceOnly": True,
             "closeOnTrigger": True
         }
         sl_resp = bybit_post("/v5/order/create", sl_payload)
-        if DEBUG: print("SL RESPONSE:", json.dumps(sl_resp, indent=2))
+
         threading.Thread(target=monitor_and_cleanup, args=(symbol,), daemon=True).start()
-        
+
     except Exception as e:
         print("💀 place_order_market_with_limit_tp_sl error:", e)
-
 
 # =============== 🧹 ЧИСТКА СТОПОВ ПОСЛЕ ЗАКРЫТИЯ ===============
 def _min_qty(symbol: str) -> float:
@@ -544,5 +566,6 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
