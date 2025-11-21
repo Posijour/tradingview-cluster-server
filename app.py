@@ -348,7 +348,7 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
             "category": "linear",
             "symbol": symbol,
             "side": exit_side,
-            "orderType": "Stop",
+            "orderType": "Market",
             "qty": str(qty),
             "triggerPrice": str(sl_price),
             "triggerBy": "LastPrice",
@@ -544,4 +544,5 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
