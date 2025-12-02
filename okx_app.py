@@ -1,6 +1,6 @@
 # okx_app.py — минимальный автотрейд-сервер под OKX (SCALP)
 
-import os, time, json, math, hmac, base64, threading, requests
+import os, time, json, math, hmac, base64, threading, requests, re
 from datetime import datetime, timezone, timedelta
 from flask import Flask, request, jsonify
 
@@ -21,6 +21,31 @@ MAX_RISK_USDT     = float(os.getenv("MAX_RISK_USDT_OKX", "1"))
 LEVERAGE          = float(os.getenv("OKX_LEVERAGE", "20"))
 BASE_SL_PCT       = float(os.getenv("OKX_BASE_SL_PCT", "0.003"))  # 0.3%
 RR_RATIO          = float(os.getenv("OKX_RR_RATIO", "2.4"))       # TP = SL * 2.4
+
+# === Telegram (тот же бот, что у Bybit) ===
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+CHAT_ID        = os.getenv("CHAT_ID", "")
+
+MD_ESCAPE = re.compile(r'([_*\[\]()~>#+\-=|{}.!])')
+
+def md_escape(text: str) -> str:
+    return MD_ESCAPE.sub(r'\\\1', text)
+
+def send_telegram(text: str):
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        print("⚠️ Telegram credentials missing.")
+        return
+    safe_text = md_escape(text)
+    try:
+        r = requests.get(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            params={"chat_id": CHAT_ID, "text": safe_text, "parse_mode": "MarkdownV2"},
+            timeout=8,
+        )
+        if r.status_code != 200:
+            print("❌ Telegram error:", r.text[:300])
+    except Exception as e:
+        print("❌ Telegram exception:", e)
 
 # глобальный кулдаун, как у тебя в bybit-коде
 trade_global_cooldown_until = 0
@@ -170,7 +195,7 @@ def okx_place_order_with_tp_sl(inst_id: str, side: str, entry: float, tp: float,
 
     print(f"\n🚀 OKX NEW TRADE {inst_id} {side} sz={sz}, entry≈{entry}, tp={tp}, sl={sl}")
 
-    # tdMode: cross / isolated (предположим cross, как в доке) :contentReference[oaicite:3]{index=3}
+    # tdMode: cross / isolated (по умолчанию cross)
     payload = {
         "instId": inst_id,
         "tdMode": "cross",
@@ -231,6 +256,17 @@ def webhook_okx():
     if now < trade_global_cooldown_until:
         remaining = int(trade_global_cooldown_until - now)
         print(f"⛔ GLOBAL COOLDOWN {remaining}s, сигнал по {inst_id} блокирован")
+
+        # уведомление о блокировке по кулдауну
+        try:
+            send_telegram(
+                f"⛔ *OKX TRADE BLOCKED*\n"
+                f"{inst_id} {direction}\n"
+                f"Cooldown {remaining}s"
+            )
+        except Exception as e:
+            print("⚠️ Telegram cooldown notify error:", e)
+
         return jsonify({"status": "cooldown"}), 200
 
     # Проверка открытой позиции
@@ -276,6 +312,19 @@ def webhook_okx():
         risk_usdt=MAX_RISK_USDT
     )
 
+    # отправка уведомления о сделке в тот же Telegram, но с пометкой OKX
+    try:
+        msg = (
+            "⚡ *AUTO-TRADE OKX (SCALP)*\n"
+            f"{inst_id} {side.upper()}\n"
+            f"Entry~{entry_f}\n"
+            f"TP: {tp}\n"
+            f"SL: {sl}"
+        )
+        send_telegram(msg)
+    except Exception as e:
+        print("⚠️ Telegram trade notify error:", e)
+
     # глобальный кулдаун
     trade_global_cooldown_until = time.time() + 180
     print("🕒 GLOBAL COOLDOWN ACTIVATED (OKX) 180s")
@@ -292,3 +341,4 @@ if __name__ == "__main__":
     print("🚀 Starting OKX SCALP server")
     port = int(os.getenv("PORT", "8090"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
