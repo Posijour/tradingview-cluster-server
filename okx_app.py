@@ -335,10 +335,14 @@ def webhook_okx():
 @app.route("/")
 def root():
     return "OKX AUTOTRADE OK", 200
-
+    
+@app.route("/health")
+def health():
+    return "OK", 200
 
 if __name__ == "__main__":
     print("🚀 Starting OKX SCALP server")
     port = int(os.getenv("PORT", "8090"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
