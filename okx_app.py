@@ -53,10 +53,9 @@ trade_global_cooldown_until = 0
 
 # =============== ВСПОМОГАТЕЛЬНОЕ ===============
 def _okx_timestamp() -> str:
-    # ISO8601 в UTC, как любит OKX: 2025-11-30T12:34:56.789Z
-    now = datetime.utcnow().replace(tzinfo=timezone.utc)
+    # корректный вариант без DeprecationWarning
+    now = datetime.now(timezone.utc)
     return now.isoformat(timespec="milliseconds").replace("+00:00", "Z")
-
 
 def _okx_sign(method: str, path: str, body: str = ""):
     """
@@ -92,22 +91,28 @@ def okx_private_get(path: str, params: dict = None, timeout: int = 10):
         print("GET", url, r.status_code, r.text[:400])
     return r.json()
 
-
 def okx_private_post(path: str, payload: dict, timeout: int = 10):
     body = json.dumps(payload, separators=(",", ":"))
     headers = _okx_sign("POST", path, body)
     url = OKX_BASE_URL.rstrip("/") + path
     r = requests.post(url, headers=headers, data=body, timeout=timeout)
+
+    text_preview = r.text[:400]
     if DEBUG:
-        print("POST", url, "payload:", payload, "resp:", r.status_code, r.text[:400])
+        print("POST", url, "payload:", payload, "resp:", r.status_code, text_preview)
+
     try:
         j = r.json()
     except Exception:
+        print("❌ OKX raw response (not JSON):", text_preview)
         return {"http": r.status_code, "text": r.text}
+
     if j.get("code") not in ("0", 0):
         print("❌ OKX error:", j)
-    return j
+    else:
+        print("✅ OKX OK:", j)
 
+    return j
 
 # === преобразование тикера из Pine -> instId OKX ===
 def tv_ticker_to_okx_inst_id(tv_ticker: str) -> str:
@@ -181,7 +186,6 @@ def okx_position_size(inst_id: str) -> float:
         total += abs(sz)
     return total
 
-
 # === размещение сделки: Market entry + TP/SL как attachAlgoOrds ===
 def okx_place_order_with_tp_sl(inst_id: str, side: str, entry: float, tp: float, sl: float, risk_usdt: float):
     """
@@ -190,19 +194,22 @@ def okx_place_order_with_tp_sl(inst_id: str, side: str, entry: float, tp: float,
     # считаем размер
     sz = calc_sz_from_risk_okx(entry, sl, risk_usdt, inst_id)
     if sz <= 0:
-        print(f"⚠️ {inst_id}: sz <= 0, сделка пропущена")
+        msg = f"⚠️ {inst_id}: sz <= 0, сделка пропущена (risk={risk_usdt}, entry={entry}, sl={sl})"
+        print(msg)
+        try:
+            send_telegram("⚠️ *OKX SIZE ERROR*\n" + msg)
+        except Exception:
+            pass
         return {"error": "bad_size"}
 
     print(f"\n🚀 OKX NEW TRADE {inst_id} {side} sz={sz}, entry≈{entry}, tp={tp}, sl={sl}")
 
-    # tdMode: cross / isolated (по умолчанию cross)
     payload = {
         "instId": inst_id,
         "tdMode": "cross",
         "side": side,                 # buy / sell
         "ordType": "market",
         "sz": str(sz),
-        # прикручиваем TP/SL к ордеру
         "attachAlgoOrds": [
             {
                 "tpTriggerPx": str(tp),
@@ -214,8 +221,18 @@ def okx_place_order_with_tp_sl(inst_id: str, side: str, entry: float, tp: float,
     }
 
     resp = okx_private_post("/api/v5/trade/order", payload)
-    return resp
+    print("📨 OKX ORDER RESPONSE:", resp)
 
+    # если биржа вернула не code=0 — кинем отдельное уведомление
+    code = str(resp.get("code", ""))
+    if code not in ("0", "00000"):
+        msg = f"❌ *OKX ORDER FAILED*\n{inst_id} {side.upper()}\ncode: {code}\nmsg: {resp.get('msg','')}"
+        try:
+            send_telegram(msg)
+        except Exception:
+            pass
+
+    return resp
 
 # =============== ПАРСИНГ PAYLOAD ИЗ PINE ===============
 def parse_payload(req):
@@ -229,7 +246,6 @@ def parse_payload(req):
         "entry": data.get("entry"),
         "tf": str(data.get("tf", "1m")).lower()
     }
-
 
 # =============== ВЕБХУК ПОД OKX ===============
 @app.route("/webhook_okx", methods=["POST"])
@@ -344,5 +360,3 @@ if __name__ == "__main__":
     print("🚀 Starting OKX SCALP server")
     port = int(os.getenv("PORT", "8090"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
-
-
