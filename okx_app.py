@@ -222,7 +222,8 @@ def okx_place_order_with_tp_sl(inst_id: str, side: str, entry: float, tp: float,
                 "slTriggerPxType": "last"
             }
         ]
-
+    }
+    
     # если аккаунт в hedge / long-short режиме — нужен posSide
     if OKX_POS_MODE.lower() in ("hedge", "long_short", "long/short"):
         payload["posSide"] = "long" if side == "buy" else "short"
@@ -381,5 +382,6 @@ if __name__ == "__main__":
     print("🚀 Starting OKX SCALP server")
     port = int(os.getenv("PORT", "8090"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
