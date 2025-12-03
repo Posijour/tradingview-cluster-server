@@ -51,6 +51,19 @@ def send_telegram(text: str):
 # глобальный кулдаун, как у тебя в bybit-коде
 trade_global_cooldown_until = 0
 
+def set_okx_leverage(inst_id: str, leverage: float):
+    try:
+        payload = {
+            "instId": inst_id,
+            "lever": str(leverage),
+            "mgnMode": "cross",  # у тебя cross
+        }
+        resp = okx_private_post("/api/v5/account/set-leverage", payload, timeout=10)
+        print("🔧 set_leverage resp:", resp)
+        return resp
+    except Exception as e:
+        print("⚠️ set_okx_leverage error:", e)
+        return None
 
 # =============== ВСПОМОГАТЕЛЬНОЕ ===============
 def _okx_timestamp() -> str:
@@ -77,7 +90,6 @@ def _okx_sign(method: str, path: str, body: str = ""):
         "Content-Type": "application/json",
     }
     return headers
-
 
 def okx_private_get(path: str, params: dict = None, timeout: int = 10):
     qs = ""
@@ -373,6 +385,8 @@ def webhook_okx():
         side = "sell"
 
     print(f"⚡ OKX SCALP {inst_id} {side} entry={entry_f} sl={sl} tp={tp}")
+    
+    set_okx_leverage(inst_id, LEVERAGE)
 
     resp = okx_place_order_with_tp_sl(
         inst_id=inst_id,
@@ -415,6 +429,7 @@ if __name__ == "__main__":
     print("🚀 Starting OKX SCALP server")
     port = int(os.getenv("PORT", "8090"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
