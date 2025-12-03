@@ -12,6 +12,7 @@ DEBUG = False
 OKX_API_KEY       = os.getenv("OKX_API_KEY", "")
 OKX_API_SECRET    = os.getenv("OKX_API_SECRET", "")
 OKX_PASSPHRASE    = os.getenv("OKX_PASSPHRASE", "")
+OKX_POS_MODE      = os.getenv("OKX_POS_MODE", "net")  # 'net' или 'hedge'
 OKX_BASE_URL      = os.getenv("OKX_BASE_URL", "https://www.okx.com")
 
 WEBHOOK_SECRET    = os.getenv("WEBHOOK_SECRET_OKX", "")  # можно другой, чтобы не путать с Bybit
@@ -194,8 +195,8 @@ def okx_place_order_with_tp_sl(inst_id: str, side: str, entry: float, tp: float,
     # считаем размер
     sz = calc_sz_from_risk_okx(entry, sl, risk_usdt, inst_id)
     if sz <= 0:
-        msg = f"⚠️ {inst_id}: sz <= 0, сделка пропущена (risk={risk_usdt}, entry={entry}, sl={sl})"
-        print(msg)
+        msg = f"{inst_id}: sz <= 0, сделка пропущена (risk={risk_usdt}, entry={entry}, sl={sl})"
+        print("⚠️", msg)
         try:
             send_telegram("⚠️ *OKX SIZE ERROR*\n" + msg)
         except Exception:
@@ -220,13 +221,31 @@ def okx_place_order_with_tp_sl(inst_id: str, side: str, entry: float, tp: float,
         ]
     }
 
+    # если аккаунт в hedge / long-short режиме — нужен posSide
+    if OKX_POS_MODE.lower() in ("hedge", "long_short", "long/short"):
+        payload["posSide"] = "long" if side == "buy" else "short"
+
     resp = okx_private_post("/api/v5/trade/order", payload)
     print("📨 OKX ORDER RESPONSE:", resp)
 
-    # если биржа вернула не code=0 — кинем отдельное уведомление
+    # разбираем детальную ошибку
     code = str(resp.get("code", ""))
+    data = resp.get("data") or []
+    sCode = sMsg = ""
+    if isinstance(data, list) and data:
+        d0 = data[0]
+        sCode = str(d0.get("sCode", ""))
+        sMsg = str(d0.get("sMsg", ""))
+
     if code not in ("0", "00000"):
-        msg = f"❌ *OKX ORDER FAILED*\n{inst_id} {side.upper()}\ncode: {code}\nmsg: {resp.get('msg','')}"
+        msg = (
+            "❌ *OKX ORDER FAILED*\n"
+            f"{inst_id} {side.upper()}\n"
+            f"code: {code}\n"
+            f"msg: {resp.get('msg','')}"
+        )
+        if sCode or sMsg:
+            msg += f"\n*sCode*: `{sCode}`\n*sMsg*: {sMsg}"
         try:
             send_telegram(msg)
         except Exception:
@@ -360,3 +379,4 @@ if __name__ == "__main__":
     print("🚀 Starting OKX SCALP server")
     port = int(os.getenv("PORT", "8090"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
