@@ -133,6 +133,7 @@ def tv_ticker_to_okx_inst_id(tv_ticker: str) -> str:
 
 # === получаем размер контракта и minSz, чтобы считать количество ===
 _okx_inst_cache = {}
+_okx_pos_mode = None  # 'net' или 'long_short'
 
 def get_okx_inst_info(inst_id: str):
     if inst_id in _okx_inst_cache:
@@ -149,6 +150,35 @@ def get_okx_inst_info(inst_id: str):
     _okx_inst_cache[inst_id] = info
     return info
 
+def get_okx_pos_mode() -> str:
+    """
+    Определяем текущий режим позиций аккаунта:
+    - 'net'       — односторонний
+    - 'long_short' — двусторонний (long/short)
+    """
+    global _okx_pos_mode
+    if _okx_pos_mode:
+        return _okx_pos_mode
+
+    try:
+        cfg = okx_private_get("/api/v5/account/config", timeout=10)
+        data = cfg.get("data") or []
+        if data:
+            raw = (data[0].get("posMode") or "net").lower()
+            if "long" in raw and "short" in raw:
+                _okx_pos_mode = "long_short"
+            elif "long_short" in raw:
+                _okx_pos_mode = "long_short"
+            else:
+                _okx_pos_mode = "net"
+        else:
+            _okx_pos_mode = "net"
+        print("🔧 OKX posMode detected:", _okx_pos_mode)
+    except Exception as e:
+        print("⚠️ Cannot detect posMode, fallback to 'net':", e)
+        _okx_pos_mode = "net"
+
+    return _okx_pos_mode
 
 def calc_sz_from_risk_okx(entry, stop, risk_usdt, inst_id: str) -> float:
     try:
@@ -175,7 +205,6 @@ def calc_sz_from_risk_okx(entry, stop, risk_usdt, inst_id: str) -> float:
     stepped = math.floor(raw_sz / lot_sz) * lot_sz
     sz = max(min_sz, stepped)
     return float(f"{sz:.4f}")
-
 
 # === простая проверка: есть ли уже открытая позиция по инструменту ===
 def okx_position_size(inst_id: str) -> float:
@@ -216,17 +245,21 @@ def okx_place_order_with_tp_sl(inst_id: str, side: str, entry: float, tp: float,
                 "tpTriggerPx": str(tp),
                 "tpOrdPx": str(tp),
                 "tpTriggerPxType": "last",
-        
+
                 "slTriggerPx": str(sl),
                 "slOrdPx": str(sl),
                 "slTriggerPxType": "last"
             }
         ]
     }
-    
-    # если аккаунт в hedge / long-short режиме — нужен posSide
-    if OKX_POS_MODE.lower() in ("hedge", "long_short", "long/short"):
+
+    # автоопределяем режим позиций
+    pos_mode = get_okx_pos_mode()  # 'net' или 'long_short'
+
+    # в long/short режиме нужен posSide = long/short
+    if pos_mode == "long_short":
         payload["posSide"] = "long" if side == "buy" else "short"
+    # в net-режиме posSide либо 'net', либо вообще не передаётся – safer не отправлять
 
     resp = okx_private_post("/api/v5/trade/order", payload)
     print("📨 OKX ORDER RESPONSE:", resp)
@@ -382,6 +415,7 @@ if __name__ == "__main__":
     print("🚀 Starting OKX SCALP server")
     port = int(os.getenv("PORT", "8090"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
 
