@@ -14,6 +14,10 @@ OKX_API_SECRET    = os.getenv("OKX_API_SECRET", "")
 OKX_PASSPHRASE    = os.getenv("OKX_PASSPHRASE", "")
 OKX_POS_MODE      = os.getenv("OKX_POS_MODE", "net")  # 'net' или 'hedge'
 OKX_BASE_URL      = os.getenv("OKX_BASE_URL", "https://www.okx.com")
+OKX_LONG_DAYS_ENV  = os.getenv("OKX_LONG_DAYS",  "0,1,2,3,4,5,6")
+OKX_SHORT_DAYS_ENV = os.getenv("OKX_SHORT_DAYS", "0,1,2,3,4,5,6")
+OKX_LONG_HOURS_ENV  = os.getenv("OKX_LONG_HOURS",  "0-3,3-6,6-9,9-12,12-15,15-18,18-21,21-24")
+OKX_SHORT_HOURS_ENV = os.getenv("OKX_SHORT_HOURS", "0-3,3-6,6-9,9-12,12-15,15-18,18-21,21-24")
 
 WEBHOOK_SECRET    = os.getenv("WEBHOOK_SECRET_OKX", "")  # можно другой, чтобы не путать с Bybit
 TRADE_ENABLED     = os.getenv("TRADE_ENABLED_OKX", "false").lower() == "true"
@@ -22,6 +26,53 @@ MAX_RISK_USDT     = float(os.getenv("MAX_RISK_USDT_OKX", "1"))
 LEVERAGE          = float(os.getenv("OKX_LEVERAGE", "20"))
 BASE_SL_PCT       = float(os.getenv("OKX_BASE_SL_PCT", "0.003"))  # 0.3%
 RR_RATIO          = float(os.getenv("OKX_RR_RATIO", "2.4"))       # TP = SL * 2.4
+
+def _parse_days(txt: str):
+    try:
+        return {int(x.strip()) for x in txt.split(",") if x.strip() != ""}
+    except Exception:
+        return set()  # если мусор в env — считаем, что ограничений по дням нет
+
+def _parse_hour_ranges(txt: str):
+    """
+    Парсит строки вида "0-2,3-5,6-8" → [(0,2), (3,5), (6,8)]
+    Окна трактуются как [start, end), то есть 0-2 = часы 0 и 1.
+    """
+    ranges = []
+    try:
+        parts = txt.split(",")
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            if "-" not in part:
+                continue
+            a, b = part.split("-", 1)
+            start = int(a.strip())
+            end   = int(b.strip())
+            # простая защита от бреда
+            if 0 <= start <= 23 and 1 <= end <= 24 and start < end:
+                ranges.append((start, end))
+    except Exception:
+        return []
+    return ranges
+
+def _hour_allowed(hour: int, ranges):
+    """
+    Возвращает True, если час попадает хотя бы в один диапазон.
+    Если ranges пустой → ограничений по часам нет.
+    """
+    if not ranges:
+        return True
+    for start, end in ranges:
+        if start <= hour < end:
+            return True
+    return False
+
+OKX_LONG_DAYS_SET       = _parse_days(OKX_LONG_DAYS_ENV)
+OKX_SHORT_DAYS_SET      = _parse_days(OKX_SHORT_DAYS_ENV)
+OKX_LONG_HOUR_RANGES    = _parse_hour_ranges(OKX_LONG_HOURS_ENV)
+OKX_SHORT_HOUR_RANGES   = _parse_hour_ranges(OKX_SHORT_HOURS_ENV)
 
 # === Telegram (тот же бот, что у Bybit) ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
@@ -332,6 +383,34 @@ def webhook_okx():
     print("RAW JSON:", request.get_json(silent=True))
     print("PARSED:", payload)
 
+    # === TIME & DAY FILTERS (UTC+2 mode) ===
+    tz_local = timezone(timedelta(hours=2))
+    now_dt_utc2 = datetime.now(timezone.utc).astimezone(tz_local)
+
+    wd   = now_dt_utc2.weekday()
+    hour = now_dt_utc2.hour
+
+    is_long = (direction == "UP")
+
+    if is_long:
+        days_set    = OKX_LONG_DAYS_SET
+        hour_ranges = OKX_LONG_HOUR_RANGES
+        side_label  = "LONG"
+    else:
+        days_set    = OKX_SHORT_DAYS_SET
+        hour_ranges = OKX_SHORT_HOUR_RANGES
+        side_label  = "SHORT"
+
+    # фильтр дней
+    if days_set and wd not in days_set:
+        print(f"⛔ OKX {side_label} blocked by weekday (UTC+2): wd={wd}, allowed={sorted(list(days_set))}")
+        return jsonify({"status": "blocked_day"}), 200
+
+    # фильтр часовых диапазонов в UTC+2
+    if not _hour_allowed(hour, hour_ranges):
+        print(f"⛔ OKX {side_label} blocked by hour (UTC+2): hour={hour}, allowed={hour_ranges}")
+        return jsonify({"status": "blocked_hour"}), 200
+
     if typ != "SCALP":
         return jsonify({"status": "ignored"}), 200
 
@@ -429,8 +508,3 @@ if __name__ == "__main__":
     print("🚀 Starting OKX SCALP server")
     port = int(os.getenv("PORT", "8090"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
-
-
-
-
-
