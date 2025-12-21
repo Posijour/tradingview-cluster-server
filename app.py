@@ -289,7 +289,6 @@ elif direction == "DOWN":
         return jsonify({"status": "blocked_hour"}), 200
 
     # === CHECK GLOBAL 3-MIN COOLDOWN ===
-    global trade_global_cooldown_until
     now = time.time()
 
     if now < trade_global_cooldown_until:
@@ -647,6 +646,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
