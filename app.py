@@ -276,17 +276,17 @@ def hour_allowed(hour: int, ranges: list[tuple[int,int]]) -> bool:
                 return True
     return False
 
-if direction == "UP":
-    if not hour_allowed(hour, BYBIT_LONG_HOURS):
-        print(f"⏰ LONG blocked at {hour}:00 UTC for {ticker}")
-        log_signal(ticker, direction, payload["tf"], "BLOCKED_HOUR")
-        return jsonify({"status": "blocked_hour"}), 200
-
-elif direction == "DOWN":
-    if not hour_allowed(hour, BYBIT_SHORT_HOURS):
-        print(f"⏰ SHORT blocked at {hour}:00 UTC for {ticker}")
-        log_signal(ticker, direction, payload["tf"], "BLOCKED_HOUR")
-        return jsonify({"status": "blocked_hour"}), 200
+    if direction == "UP":
+        if not hour_allowed(hour, BYBIT_LONG_HOURS):
+            print(f"⏰ LONG blocked at {hour}:00 UTC for {ticker}")
+            log_signal(ticker, direction, payload["tf"], "BLOCKED_HOUR")
+            return jsonify({"status": "blocked_hour"}), 200
+    
+    elif direction == "DOWN":
+        if not hour_allowed(hour, BYBIT_SHORT_HOURS):
+            print(f"⏰ SHORT blocked at {hour}:00 UTC for {ticker}")
+            log_signal(ticker, direction, payload["tf"], "BLOCKED_HOUR")
+            return jsonify({"status": "blocked_hour"}), 200
 
     # === CHECK GLOBAL 3-MIN COOLDOWN ===
     now = time.time()
@@ -646,6 +646,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
