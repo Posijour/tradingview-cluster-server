@@ -18,6 +18,17 @@ BACKUP_ONLY_IF_GROWS = os.getenv("BACKUP_ONLY_IF_GROWS", "true").lower() == "tru
 BYBIT_API_KEY = os.getenv("BYBIT_API_KEY", "")
 BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET", "")
 BYBIT_BASE_URL = os.getenv("BYBIT_BASE_URL", "https://api.bybit.com")
+BYBIT_LONG_DAYS_ENV  = os.getenv("BYBIT_LONG_DAYS",  "0,1,2,3,4,5,6")
+BYBIT_SHORT_DAYS_ENV = os.getenv("BYBIT_SHORT_DAYS", "0,1,2,3,4,5,6")
+
+BYBIT_LONG_HOURS_ENV  = os.getenv(
+    "BYBIT_LONG_HOURS",
+    "0-3,3-6,6-9,9-12,12-15,15-18,18-21,21-24"
+)
+BYBIT_SHORT_HOURS_ENV = os.getenv(
+    "BYBIT_SHORT_HOURS",
+    "0-3,3-6,6-9,9-12,12-15,15-18,18-21,21-24"
+)
 
 TRADE_ENABLED = os.getenv("TRADE_ENABLED", "false").lower() == "true"
 SCALP_ENABLED = os.getenv("SCALP_ENABLED", "true").lower() == "true"
@@ -566,6 +577,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
