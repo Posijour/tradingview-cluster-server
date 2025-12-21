@@ -263,7 +263,6 @@ def webhook():
             return jsonify({"status": "blocked_day"}), 200
 
     # === FILTER: HOURS (UTC+2) ===
-    hour = (datetime.utcnow().hour + 2) % 24  # UTC+2
 
 def hour_allowed(hour: int, ranges: list[tuple[int,int]]) -> bool:
     for start, end in ranges:
@@ -646,6 +645,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
