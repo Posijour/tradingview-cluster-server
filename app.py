@@ -58,6 +58,11 @@ def parse_days(env_value: str) -> set:
 BYBIT_LONG_DAYS  = parse_days(BYBIT_LONG_DAYS_ENV)
 BYBIT_SHORT_DAYS = parse_days(BYBIT_SHORT_DAYS_ENV)
 
+def parse_symbols(env_value: str) -> set:
+    return {s.strip().upper() for s in env_value.split(",") if s.strip()}
+BYBIT_LONG_SYMBOLS  = parse_symbols(os.getenv("BYBIT_LONG_SYMBOLS", ""))
+BYBIT_SHORT_SYMBOLS = parse_symbols(os.getenv("BYBIT_SHORT_SYMBOLS", ""))
+
 def parse_hours(env_value: str) -> list[tuple[int, int]]:
     ranges = []
     for part in env_value.split(","):
@@ -286,6 +291,20 @@ def hour_allowed(hour: int, ranges: list[tuple[int,int]]) -> bool:
             print(f"⏰ SHORT blocked at {hour}:00 UTC for {ticker}")
             log_signal(ticker, direction, payload["tf"], "BLOCKED_HOUR")
             return jsonify({"status": "blocked_hour"}), 200
+
+    # === FILTER: SYMBOL + DIRECTION ===
+    if direction == "UP":
+        if ticker not in BYBIT_LONG_SYMBOLS:
+            print(f"🪙 LONG blocked for {ticker}")
+            log_signal(ticker, direction, payload["tf"], "BLOCKED_SYMBOL")
+            return jsonify({"status": "blocked_symbol"}), 200
+
+    elif direction == "DOWN":
+        if ticker not in BYBIT_SHORT_SYMBOLS:
+            print(f"🪙 SHORT blocked for {ticker}")
+            log_signal(ticker, direction, payload["tf"], "BLOCKED_SYMBOL")
+            return jsonify({"status": "blocked_symbol"}), 200
+
 
     # === CHECK GLOBAL 3-MIN COOLDOWN ===
     now = time.time()
@@ -645,6 +664,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
