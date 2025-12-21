@@ -250,17 +250,17 @@ now_local = datetime.utcnow() + timedelta(hours=2)
 weekday = now_local.weekday()  # 0=Mon ... 6=Sun
 hour = now_local.hour          # 0..23
 
-if direction == "UP":
-    if weekday not in BYBIT_LONG_DAYS:
-        print(f"📅 LONG blocked today ({weekday}) for {ticker}")
-        log_signal(ticker, direction, payload["tf"], "BLOCKED_DAY")
-        return jsonify({"status": "blocked_day"}), 200
-
-elif direction == "DOWN":
-    if weekday not in BYBIT_SHORT_DAYS:
-        print(f"📅 SHORT blocked today ({weekday}) for {ticker}")
-        log_signal(ticker, direction, payload["tf"], "BLOCKED_DAY")
-        return jsonify({"status": "blocked_day"}), 200
+    if direction == "UP":
+        if weekday not in BYBIT_LONG_DAYS:
+            print(f"📅 LONG blocked today ({weekday}) for {ticker}")
+            log_signal(ticker, direction, payload["tf"], "BLOCKED_DAY")
+            return jsonify({"status": "blocked_day"}), 200
+    
+    elif direction == "DOWN":
+        if weekday not in BYBIT_SHORT_DAYS:
+            print(f"📅 SHORT blocked today ({weekday}) for {ticker}")
+            log_signal(ticker, direction, payload["tf"], "BLOCKED_DAY")
+            return jsonify({"status": "blocked_day"}), 200
 
 # === FILTER: HOURS (UTC+2) ===
 hour = (datetime.utcnow().hour + 2) % 24  # UTC+2
@@ -646,6 +646,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
