@@ -50,6 +50,33 @@ LOG_FILE = "/tmp/signals_log.csv"
 
 app = Flask(__name__)
 
+def parse_days(env_value: str) -> set:
+    try:
+        return {int(x) for x in env_value.split(",") if x.strip().isdigit()}
+    except Exception:
+        return set()
+BYBIT_LONG_DAYS  = parse_days(BYBIT_LONG_DAYS_ENV)
+BYBIT_SHORT_DAYS = parse_days(BYBIT_SHORT_DAYS_ENV)
+
+def parse_hours(env_value: str) -> list[tuple[int, int]]:
+    ranges = []
+    for part in env_value.split(","):
+        part = part.strip()
+        if "-" not in part:
+            continue
+        try:
+            start, end = part.split("-", 1)
+            start_h = int(start)
+            end_h = int(end)
+            if 0 <= start_h <= 24 and 0 <= end_h <= 24 and start_h != end_h:
+                ranges.append((start_h, end_h))
+        except Exception:
+            continue
+    return ranges
+
+BYBIT_LONG_HOURS  = parse_hours(BYBIT_LONG_HOURS_ENV)
+BYBIT_SHORT_HOURS = parse_hours(BYBIT_SHORT_HOURS_ENV)
+
 # =============== 🔐 BYBIT SIGN ===============
 def _bybit_sign(payload: dict, method: str = "POST", query_string: str = ""):
     ts = str(int(time.time() * 1000))
@@ -217,6 +244,49 @@ def webhook():
 
     if typ != "SCALP" or not SCALP_ENABLED:
         return jsonify({"status": "ignored"}), 200
+
+   # === FILTER: DAY OF WEEK + DIRECTION ===
+now_local = datetime.utcnow() + timedelta(hours=2)
+weekday = now_local.weekday()  # 0=Mon ... 6=Sun
+hour = now_local.hour          # 0..23
+
+if direction == "UP":
+    if weekday not in BYBIT_LONG_DAYS:
+        print(f"📅 LONG blocked today ({weekday}) for {ticker}")
+        log_signal(ticker, direction, payload["tf"], "BLOCKED_DAY")
+        return jsonify({"status": "blocked_day"}), 200
+
+elif direction == "DOWN":
+    if weekday not in BYBIT_SHORT_DAYS:
+        print(f"📅 SHORT blocked today ({weekday}) for {ticker}")
+        log_signal(ticker, direction, payload["tf"], "BLOCKED_DAY")
+        return jsonify({"status": "blocked_day"}), 200
+
+# === FILTER: HOURS (UTC+2) ===
+hour = (datetime.utcnow().hour + 2) % 24  # UTC+2
+
+def hour_allowed(hour: int, ranges: list[tuple[int,int]]) -> bool:
+    for start, end in ranges:
+        if start < end:
+            if start <= hour < end:
+                return True
+        else:
+            # на случай диапазона через полночь, типа 22-2
+            if hour >= start or hour < end:
+                return True
+    return False
+
+if direction == "UP":
+    if not hour_allowed(hour, BYBIT_LONG_HOURS):
+        print(f"⏰ LONG blocked at {hour}:00 UTC for {ticker}")
+        log_signal(ticker, direction, payload["tf"], "BLOCKED_HOUR")
+        return jsonify({"status": "blocked_hour"}), 200
+
+elif direction == "DOWN":
+    if not hour_allowed(hour, BYBIT_SHORT_HOURS):
+        print(f"⏰ SHORT blocked at {hour}:00 UTC for {ticker}")
+        log_signal(ticker, direction, payload["tf"], "BLOCKED_HOUR")
+        return jsonify({"status": "blocked_hour"}), 200
 
     # === CHECK GLOBAL 3-MIN COOLDOWN ===
     global trade_global_cooldown_until
@@ -577,6 +647,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
