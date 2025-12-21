@@ -245,10 +245,10 @@ def webhook():
     if typ != "SCALP" or not SCALP_ENABLED:
         return jsonify({"status": "ignored"}), 200
 
-   # === FILTER: DAY OF WEEK + DIRECTION ===
-now_local = datetime.utcnow() + timedelta(hours=2)
-weekday = now_local.weekday()  # 0=Mon ... 6=Sun
-hour = now_local.hour          # 0..23
+    # === FILTER: DAY OF WEEK + DIRECTION ===
+    now_local = datetime.utcnow() + timedelta(hours=2)
+    weekday = now_local.weekday()  # 0=Mon ... 6=Sun
+    hour = now_local.hour          # 0..23
 
     if direction == "UP":
         if weekday not in BYBIT_LONG_DAYS:
@@ -262,8 +262,8 @@ hour = now_local.hour          # 0..23
             log_signal(ticker, direction, payload["tf"], "BLOCKED_DAY")
             return jsonify({"status": "blocked_day"}), 200
 
-# === FILTER: HOURS (UTC+2) ===
-hour = (datetime.utcnow().hour + 2) % 24  # UTC+2
+    # === FILTER: HOURS (UTC+2) ===
+    hour = (datetime.utcnow().hour + 2) % 24  # UTC+2
 
 def hour_allowed(hour: int, ranges: list[tuple[int,int]]) -> bool:
     for start, end in ranges:
@@ -646,6 +646,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
