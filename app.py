@@ -277,11 +277,13 @@ def webhook():
     if direction == "UP":
         if weekday not in BYBIT_LONG_DAYS:
             log_block("BLOCKED_DAY", ticker, direction, payload)
+            send_telegram("BLOCKED_DAY", ticker, direction, entry)
             return jsonify({"status": "blocked_day"}), 200
     
     elif direction == "DOWN":
         if weekday not in BYBIT_SHORT_DAYS:
             log_block("BLOCKED_DAY", ticker, direction, payload)
+            send_telegram("BLOCKED_DAY", ticker, direction, entry)
             return jsonify({"status": "blocked_day"}), 200
 
     # === FILTER: HOURS (UTC+2) ===
@@ -289,22 +291,26 @@ def webhook():
     if direction == "UP":
         if not hour_allowed(hour, BYBIT_LONG_HOURS):
             log_block("BLOCKED_HOUR", ticker, direction, payload)
+            send_telegram("BLOCKED_HOUR", ticker, direction, entry)
             return jsonify({"status": "blocked_hour"}), 200
     
     elif direction == "DOWN":
         if not hour_allowed(hour, BYBIT_SHORT_HOURS):
             log_block("BLOCKED_HOUR", ticker, direction, payload)
+            send_telegram("BLOCKED_HOUR", ticker, direction, entry)
             return jsonify({"status": "blocked_hour"}), 200
 
     # === FILTER: SYMBOL + DIRECTION ===
     if direction == "UP":
         if ticker not in BYBIT_LONG_SYMBOLS:
             log_block("BLOCKED_SYMBOL", ticker, direction, payload)
+            send_telegram("BLOCKED_SYMBOL", ticker, direction, entry)
             return jsonify({"status": "blocked_symbol"}), 200
 
     elif direction == "DOWN":
         if ticker not in BYBIT_SHORT_SYMBOLS:
             log_block("BLOCKED_SYMBOL", ticker, direction, payload)
+            send_telegram("BLOCKED_SYMBOL", ticker, direction, entry)
             return jsonify({"status": "blocked_symbol"}), 200
 
     # === CHECK GLOBAL 3-MIN COOLDOWN ===
@@ -665,6 +671,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
