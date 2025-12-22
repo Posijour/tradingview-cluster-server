@@ -223,6 +223,17 @@ def parse_payload(req):
         "entry":data.get("entry"),
     }
 
+def hour_allowed(hour: int, ranges: list[tuple[int,int]]) -> bool:
+    for start, end in ranges:
+        if start < end:
+            if start <= hour < end:
+                return True
+        else:
+            # на случай диапазона через полночь, типа 22-2
+            if hour >= start or hour < end:
+                return True
+    return False
+
 # =============== 🔔 ВЕБХУК: ТОЛЬКО SCALP ===============
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -269,17 +280,6 @@ def webhook():
 
     # === FILTER: HOURS (UTC+2) ===
 
-def hour_allowed(hour: int, ranges: list[tuple[int,int]]) -> bool:
-    for start, end in ranges:
-        if start < end:
-            if start <= hour < end:
-                return True
-        else:
-            # на случай диапазона через полночь, типа 22-2
-            if hour >= start or hour < end:
-                return True
-    return False
-
     if direction == "UP":
         if not hour_allowed(hour, BYBIT_LONG_HOURS):
             print(f"⏰ LONG blocked at {hour}:00 UTC for {ticker}")
@@ -305,19 +305,20 @@ def hour_allowed(hour: int, ranges: list[tuple[int,int]]) -> bool:
             log_signal(ticker, direction, payload["tf"], "BLOCKED_SYMBOL")
             return jsonify({"status": "blocked_symbol"}), 200
 
-
     # === CHECK GLOBAL 3-MIN COOLDOWN ===
     now = time.time()
 
     if now < trade_global_cooldown_until:
         remaining = int(trade_global_cooldown_until - now)
         print(f"⛔ GLOBAL BLOCK: {remaining}s remaining. Signal blocked for {ticker} {direction}")
-        
         send_telegram(f"⛔ *TRADE BLOCKED*\n{ticker} {direction}\nCooldown {remaining}s")
-        
         log_signal(ticker, direction, payload['tf'], "BLOCKED")
         return jsonify({"status": "blocked"}), 200
-
+        
+    # === FALLBACK (ОБЯЗАТЕЛЬНО) ===
+    print("⚠️ webhook finished without action")
+    return jsonify({"status": "no_action"}), 200
+    
     # === Мгновенная защита от дублей (5 секунд) ===
     global last_signal_lock
     if 'last_signal_lock' not in globals():
@@ -664,6 +665,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
