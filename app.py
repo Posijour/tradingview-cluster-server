@@ -315,11 +315,7 @@ def webhook():
         send_telegram(f"⛔ *TRADE BLOCKED*\n{ticker} {direction}\nCooldown {remaining}s")
         log_block(f"GLOBAL_COOLDOWN_{remaining}s", ticker, direction, payload)
         return jsonify({"status": "blocked"}), 200
-        
-    # === FALLBACK (ОБЯЗАТЕЛЬНО) ===
-    log_block("NO_ACTION", ticker, direction, payload)
-    return jsonify({"status": "no_action"}), 200
-    
+
     # === Мгновенная защита от дублей (5 секунд) ===
     global last_signal_lock
     if 'last_signal_lock' not in globals():
@@ -404,11 +400,14 @@ def webhook():
         print(f"🕒 GLOBAL COOLDOWN ACTIVATED for 180s due to {ticker} {direction}")
         send_telegram("🕒 *GLOBAL COOLDOWN ACTIVATED*\n180 seconds pause")
 
+        return jsonify({"status": "ok"}), 200
+        
     except Exception as e:
         print("❌ Trade error (SCALP):", e)
 
-
-    return jsonify({"status": "ok"}), 200
+    # === FALLBACK (ОБЯЗАТЕЛЬНО) ===
+    log_block("NO_ACTION", ticker, direction, payload)
+    return jsonify({"status": "no_action"}), 200
 
 # (остальная часть твоего кода — place_order_market_with_limit_tp_sl, monitor_and_cleanup, monitor_closed_trades, heartbeat_loop, backup_log_worker, main, health — остаётся без изменений)
 
@@ -666,6 +665,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
