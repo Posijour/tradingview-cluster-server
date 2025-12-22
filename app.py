@@ -234,6 +234,13 @@ def hour_allowed(hour: int, ranges: list[tuple[int,int]]) -> bool:
                 return True
     return False
 
+def log_block(reason: str, ticker: str, direction: str, payload: dict):
+    print(
+        f"🚫 BLOCKED | {reason} | {ticker} {direction} | tf={payload.get('tf')}",
+        flush=True
+    )
+    log_signal(ticker, direction, payload.get("tf"), reason)
+
 # =============== 🔔 ВЕБХУК: ТОЛЬКО SCALP ===============
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -259,6 +266,7 @@ def webhook():
     print("PARSED PAYLOAD:", payload, flush=True)
 
     if typ != "SCALP" or not SCALP_ENABLED:
+        log_block("NOT_SCALP", ticker, direction, payload)
         return jsonify({"status": "ignored"}), 200
 
     # === FILTER: DAY OF WEEK + DIRECTION ===
@@ -268,41 +276,35 @@ def webhook():
 
     if direction == "UP":
         if weekday not in BYBIT_LONG_DAYS:
-            print(f"📅 LONG blocked today ({weekday}) for {ticker}")
-            log_signal(ticker, direction, payload["tf"], "BLOCKED_DAY")
+            log_block("BLOCKED_DAY", ticker, direction, payload)
             return jsonify({"status": "blocked_day"}), 200
     
     elif direction == "DOWN":
         if weekday not in BYBIT_SHORT_DAYS:
-            print(f"📅 SHORT blocked today ({weekday}) for {ticker}")
-            log_signal(ticker, direction, payload["tf"], "BLOCKED_DAY")
+            log_block("BLOCKED_DAY", ticker, direction, payload)
             return jsonify({"status": "blocked_day"}), 200
 
     # === FILTER: HOURS (UTC+2) ===
 
     if direction == "UP":
         if not hour_allowed(hour, BYBIT_LONG_HOURS):
-            print(f"⏰ LONG blocked at {hour}:00 UTC for {ticker}")
-            log_signal(ticker, direction, payload["tf"], "BLOCKED_HOUR")
+            log_block("BLOCKED_HOUR", ticker, direction, payload)
             return jsonify({"status": "blocked_hour"}), 200
     
     elif direction == "DOWN":
         if not hour_allowed(hour, BYBIT_SHORT_HOURS):
-            print(f"⏰ SHORT blocked at {hour}:00 UTC for {ticker}")
-            log_signal(ticker, direction, payload["tf"], "BLOCKED_HOUR")
+            log_block("BLOCKED_HOUR", ticker, direction, payload)
             return jsonify({"status": "blocked_hour"}), 200
 
     # === FILTER: SYMBOL + DIRECTION ===
     if direction == "UP":
         if ticker not in BYBIT_LONG_SYMBOLS:
-            print(f"🪙 LONG blocked for {ticker}")
-            log_signal(ticker, direction, payload["tf"], "BLOCKED_SYMBOL")
+            log_block("BLOCKED_SYMBOL", ticker, direction, payload)
             return jsonify({"status": "blocked_symbol"}), 200
 
     elif direction == "DOWN":
         if ticker not in BYBIT_SHORT_SYMBOLS:
-            print(f"🪙 SHORT blocked for {ticker}")
-            log_signal(ticker, direction, payload["tf"], "BLOCKED_SYMBOL")
+            log_block("BLOCKED_SYMBOL", ticker, direction, payload)
             return jsonify({"status": "blocked_symbol"}), 200
 
     # === CHECK GLOBAL 3-MIN COOLDOWN ===
@@ -310,13 +312,12 @@ def webhook():
 
     if now < trade_global_cooldown_until:
         remaining = int(trade_global_cooldown_until - now)
-        print(f"⛔ GLOBAL BLOCK: {remaining}s remaining. Signal blocked for {ticker} {direction}")
         send_telegram(f"⛔ *TRADE BLOCKED*\n{ticker} {direction}\nCooldown {remaining}s")
-        log_signal(ticker, direction, payload['tf'], "BLOCKED")
+        log_block(f"GLOBAL_COOLDOWN_{remaining}s", ticker, direction, payload)
         return jsonify({"status": "blocked"}), 200
         
     # === FALLBACK (ОБЯЗАТЕЛЬНО) ===
-    print("⚠️ webhook finished without action")
+    log_block("NO_ACTION", ticker, direction, payload)
     return jsonify({"status": "no_action"}), 200
     
     # === Мгновенная защита от дублей (5 секунд) ===
@@ -665,6 +666,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
