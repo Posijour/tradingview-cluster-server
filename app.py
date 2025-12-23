@@ -235,10 +235,13 @@ def hour_allowed(hour: int, ranges: list[tuple[int,int]]) -> bool:
     return False
 
 def log_block(reason: str, ticker: str, direction: str, payload: dict):
+    entry = payload.get("entry")
+
     print(
-        f"🚫 BLOCKED | {reason} | {ticker} {direction} | tf={payload.get('tf')}",
+        f"🚫 BLOCKED | {reason} | {ticker} {direction} | entry={entry}",
         flush=True
     )
+
     log_signal(ticker, direction, payload.get("tf"), reason)
 
     send_telegram(
@@ -672,6 +675,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
