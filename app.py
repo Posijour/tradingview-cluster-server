@@ -322,7 +322,6 @@ def webhook():
 
     if now < trade_global_cooldown_until:
         remaining = int(trade_global_cooldown_until - now)
-        send_telegram(f"⛔ *TRADE BLOCKED*\n{ticker} {direction}\nCooldown {remaining}s")
         log_block(f"GLOBAL_COOLDOWN_{remaining}s", ticker, direction, payload)
         return jsonify({"status": "blocked"}), 200
 
@@ -675,6 +674,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
