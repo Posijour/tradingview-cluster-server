@@ -238,7 +238,7 @@ def log_block(reason: str, ticker: str, direction: str, payload: dict):
     entry = payload.get("entry")
 
     print(
-        f"🚫 BLOCKED | {reason} | {ticker} {direction} | entry={entry}",
+        f"🚫 BYBIT BLOCKED | {reason} | {ticker} {direction} | entry={entry}",
         flush=True
     )
 
@@ -396,7 +396,7 @@ def webhook():
         place_order_market_with_limit_tp_sl(ticker, side, qty, target_f, stop_f)
 
         send_telegram(
-            f"⚡ *AUTO-TRADE (SCALP)*\n"
+            f"⚡ *BYBIT TRADE*\n"
             f"{ticker} {side}\n"
             f"Entry~{entry_f}\n"
             f"TP:{target_f}\n"
@@ -407,7 +407,6 @@ def webhook():
         # === ACTIVATE GLOBAL COOLDOWN ===
         trade_global_cooldown_until = time.time() + 180  # 3 minutes
         print(f"🕒 GLOBAL COOLDOWN ACTIVATED for 180s due to {ticker} {direction}")
-        send_telegram("🕒 *GLOBAL COOLDOWN ACTIVATED*\n180 seconds pause")
 
         return jsonify({"status": "ok"}), 200
         
@@ -674,6 +673,7 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
 
 
 
