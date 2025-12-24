@@ -431,12 +431,24 @@ def webhook_okx():
 
         return jsonify({"status": "cooldown"}), 200
 
-    # Проверка открытой позиции
+    # Проверка открытой позиции (БЛОКИРУЕМ независимо от направления)
     try:
         pos_sz = okx_position_size(inst_id)
         if pos_sz > 0:
-            print(f"⏸ {inst_id}: уже есть позиция ({pos_sz}), сигнал пропущен")
-            return jsonify({"status": "skipped_open_position"}), 200
+            print(f"⏸ {inst_id}: уже есть позиция ({pos_sz}), сигнал заблокирован")
+    
+            try:
+                send_telegram(
+                    "⛔ *OKX TRADE BLOCKED*\n"
+                    f"{inst_id}\n"
+                    f"Direction: {direction}\n"
+                    f"Entry: {entry}\n"
+                    f"Reason: OPEN POSITION"
+                )
+            except Exception as e:
+                print("⚠️ Telegram block notify error:", e)
+    
+            return jsonify({"status": "blocked_open_position"}), 200
     except Exception as e:
         print(f"⚠️ Ошибка чтения позиций OKX: {e}")
 
@@ -508,4 +520,5 @@ if __name__ == "__main__":
     print("🚀 Starting OKX SCALP server")
     port = int(os.getenv("PORT", "8090"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
