@@ -270,14 +270,31 @@ def calc_sz_from_risk_okx(entry, stop, risk_usdt, inst_id: str) -> float:
     return float(f"{sz:.4f}")
 
 # === простая проверка: есть ли уже открытая позиция по инструменту ===
-def okx_position_size(inst_id: str) -> float:
-    j = okx_private_get("/api/v5/account/positions", {"instType": "SWAP", "instId": inst_id})
-    data = j.get("data") or []
-    total = 0.0
-    for p in data:
-        sz = float(p.get("pos", "0"))
-        total += abs(sz)
-    return total
+def okx_has_position(inst_id: str) -> bool:
+    j = okx_private_get(
+        "/api/v5/account/positions",
+        {"instType": "SWAP", "instId": inst_id}
+    )
+    for p in j.get("data", []):
+        pos = float(p.get("pos", "0"))
+        avail = float(p.get("availPos", "0"))
+        if abs(pos) > 0 or abs(avail) > 0:
+            return True
+    return False
+
+def okx_has_open_orders(inst_id: str) -> bool:
+    j = okx_private_get(
+        "/api/v5/trade/orders-pending",
+        {"instType": "SWAP", "instId": inst_id}
+    )
+    return bool(j.get("data"))
+
+def okx_has_algo_orders(inst_id: str) -> bool:
+    j = okx_private_get(
+        "/api/v5/trade/orders-algo-pending",
+        {"instType": "SWAP", "instId": inst_id}
+    )
+    return bool(j.get("data"))
 
 # === размещение сделки: Market entry + TP/SL как attachAlgoOrds ===
 def okx_place_order_with_tp_sl(inst_id: str, side: str, entry: float, tp: float, sl: float, risk_usdt: float):
@@ -433,24 +450,23 @@ def webhook_okx():
 
     # Проверка открытой позиции (БЛОКИРУЕМ независимо от направления)
     try:
-        pos_sz = okx_position_size(inst_id)
-        if pos_sz > 0:
-            print(f"⏸ {inst_id}: уже есть позиция ({pos_sz}), сигнал заблокирован")
+        if (
+            okx_has_position(inst_id)
+            or okx_has_open_orders(inst_id)
+            or okx_has_algo_orders(inst_id)
+        ):
+            print(f"⛔ {inst_id}: позиция или ордера уже существуют, сигнал заблокирован")
     
-            try:
-                send_telegram(
-                    "⛔ *OKX TRADE BLOCKED*\n"
-                    f"{inst_id}\n"
-                    f"Direction: {direction}\n"
-                    f"Entry: {entry}\n"
-                    f"Reason: OPEN POSITION"
-                )
-            except Exception as e:
-                print("⚠️ Telegram block notify error:", e)
+            send_telegram(
+                "⛔ *OKX TRADE BLOCKED*\n"
+                f"{inst_id}\n"
+                f"Direction: {direction}\n"
+                f"Reason: POSITION OR ORDERS EXIST"
+            )
     
-            return jsonify({"status": "blocked_open_position"}), 200
+            return jsonify({"status": "blocked_existing_state"}), 200
     except Exception as e:
-        print(f"⚠️ Ошибка чтения позиций OKX: {e}")
+        print(f"⚠️ Ошибка проверки состояния OKX: {e}")
 
     if not TRADE_ENABLED:
         print("🚫 TRADE_DISABLED_OKX")
@@ -520,5 +536,6 @@ if __name__ == "__main__":
     print("🚀 Starting OKX SCALP server")
     port = int(os.getenv("PORT", "8090"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
+
 
 
