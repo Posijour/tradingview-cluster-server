@@ -21,6 +21,8 @@ OKX_SHORT_HOURS_ENV = os.getenv("OKX_SHORT_HOURS", "0-3,3-6,6-9,9-12,12-15,15-18
 
 WEBHOOK_SECRET    = os.getenv("WEBHOOK_SECRET_OKX", "")  # можно другой, чтобы не путать с Bybit
 TRADE_ENABLED     = os.getenv("TRADE_ENABLED_OKX", "false").lower() == "true"
+instrument_locks = {}
+instrument_locks_lock = threading.Lock()
 
 MAX_RISK_USDT     = float(os.getenv("MAX_RISK_USDT_OKX", "1"))
 LEVERAGE          = float(os.getenv("OKX_LEVERAGE", "20"))
@@ -101,6 +103,22 @@ def send_telegram(text: str):
 
 # глобальный кулдаун, как у тебя в bybit-коде
 trade_global_cooldown_until = 0
+
+def acquire_instrument_lock(inst_id: str, ttl: int = 30) -> bool:
+    """
+    Возвращает False, если инструмент уже заблокирован
+    """
+    now = time.time()
+    with instrument_locks_lock:
+        ts = instrument_locks.get(inst_id, 0)
+        if now < ts:
+            return False
+        instrument_locks[inst_id] = now + ttl
+        return True
+
+def release_instrument_lock(inst_id: str):
+    with instrument_locks_lock:
+        instrument_locks.pop(inst_id, None)
 
 def set_okx_leverage(inst_id: str, leverage: float):
     try:
@@ -387,10 +405,12 @@ def parse_payload(req):
 def webhook_okx():
     global trade_global_cooldown_until
 
+    # === SECRET ===
     if WEBHOOK_SECRET and request.args.get("key", "") != WEBHOOK_SECRET:
         return "forbidden", 403
 
     payload = parse_payload(request)
+
     typ        = payload["type"]
     inst_id    = payload["instId"]
     direction  = payload["direction"]
@@ -400,129 +420,129 @@ def webhook_okx():
     print("RAW JSON:", request.get_json(silent=True))
     print("PARSED:", payload)
 
-    # === TIME & DAY FILTERS (UTC+2 mode) ===
-    tz_local = timezone(timedelta(hours=2))
-    now_dt_utc2 = datetime.now(timezone.utc).astimezone(tz_local)
+    # === LOCAL INSTRUMENT LOCK ===
+    if not acquire_instrument_lock(inst_id, ttl=60):
+        print(f"⛔ {inst_id}: local lock active, signal ignored")
+        return jsonify({"status": "blocked_local_lock"}), 200
 
-    wd   = now_dt_utc2.weekday()
-    hour = now_dt_utc2.hour
+    try:
+        # === TIME & DAY FILTERS (UTC+2) ===
+        tz_local = timezone(timedelta(hours=2))
+        now_dt   = datetime.now(timezone.utc).astimezone(tz_local)
 
-    is_long = (direction == "UP")
+        wd   = now_dt.weekday()
+        hour = now_dt.hour
 
-    if is_long:
-        days_set    = OKX_LONG_DAYS_SET
-        hour_ranges = OKX_LONG_HOUR_RANGES
-        side_label  = "LONG"
-    else:
-        days_set    = OKX_SHORT_DAYS_SET
-        hour_ranges = OKX_SHORT_HOUR_RANGES
-        side_label  = "SHORT"
+        is_long = (direction == "UP")
 
-    # фильтр дней
-    if days_set and wd not in days_set:
-        print(f"⛔ OKX {side_label} blocked by weekday (UTC+2): wd={wd}, allowed={sorted(list(days_set))}")
-        return jsonify({"status": "blocked_day"}), 200
+        if is_long:
+            days_set    = OKX_LONG_DAYS_SET
+            hour_ranges = OKX_LONG_HOUR_RANGES
+            side_label  = "LONG"
+        else:
+            days_set    = OKX_SHORT_DAYS_SET
+            hour_ranges = OKX_SHORT_HOUR_RANGES
+            side_label  = "SHORT"
 
-    # фильтр часовых диапазонов в UTC+2
-    if not _hour_allowed(hour, hour_ranges):
-        print(f"⛔ OKX {side_label} blocked by hour (UTC+2): hour={hour}, allowed={hour_ranges}")
-        return jsonify({"status": "blocked_hour"}), 200
+        if days_set and wd not in days_set:
+            print(f"⛔ OKX {side_label} blocked by weekday (UTC+2)")
+            return jsonify({"status": "blocked_day"}), 200
 
-    if typ != "SCALP":
-        return jsonify({"status": "ignored"}), 200
+        if not _hour_allowed(hour, hour_ranges):
+            print(f"⛔ OKX {side_label} blocked by hour (UTC+2)")
+            return jsonify({"status": "blocked_hour"}), 200
 
-    now = time.time()
-    if now < trade_global_cooldown_until:
-        remaining = int(trade_global_cooldown_until - now)
-        print(f"⛔ GLOBAL COOLDOWN {remaining}s, сигнал по {inst_id} блокирован")
+        if typ != "SCALP":
+            return jsonify({"status": "ignored"}), 200
 
-        # уведомление о блокировке по кулдауну
-        try:
+        # === GLOBAL COOLDOWN ===
+        now = time.time()
+        if now < trade_global_cooldown_until:
+            remaining = int(trade_global_cooldown_until - now)
+            print(f"⛔ GLOBAL COOLDOWN {remaining}s")
+
             send_telegram(
                 f"⛔ *OKX TRADE BLOCKED*\n"
                 f"{inst_id} {direction}\n"
                 f"Cooldown {remaining}s"
             )
-        except Exception as e:
-            print("⚠️ Telegram cooldown notify error:", e)
+            return jsonify({"status": "cooldown"}), 200
 
-        return jsonify({"status": "cooldown"}), 200
-
-    # Проверка открытой позиции (БЛОКИРУЕМ независимо от направления)
-    try:
+        # === EXISTING STATE CHECK ===
         if (
             okx_has_position(inst_id)
             or okx_has_open_orders(inst_id)
             or okx_has_algo_orders(inst_id)
         ):
-            print(f"⛔ {inst_id}: позиция или ордера уже существуют, сигнал заблокирован")
-    
+            print(f"⛔ {inst_id}: position or orders already exist")
+
             send_telegram(
                 "⛔ *OKX TRADE BLOCKED*\n"
                 f"{inst_id}\n"
                 f"Direction: {direction}\n"
                 f"Reason: POSITION OR ORDERS EXIST"
             )
-    
             return jsonify({"status": "blocked_existing_state"}), 200
-    except Exception as e:
-        print(f"⚠️ Ошибка проверки состояния OKX: {e}")
 
-    if not TRADE_ENABLED:
-        print("🚫 TRADE_DISABLED_OKX")
-        return jsonify({"status": "trade_disabled"}), 200
+        # === TRADE ENABLED ===
+        if not TRADE_ENABLED:
+            print("🚫 TRADE_DISABLED_OKX")
+            return jsonify({"status": "trade_disabled"}), 200
 
-    try:
-        entry_f = float(entry)
-    except Exception:
-        print("⚠️ entry некорректный:", entry)
-        return jsonify({"status": "bad_entry"}), 200
+        try:
+            entry_f = float(entry)
+        except Exception:
+            print("⚠️ bad entry:", entry)
+            return jsonify({"status": "bad_entry"}), 200
 
-    # 0.3% стоп
-    stop_size = entry_f * BASE_SL_PCT
-    take_size = stop_size * RR_RATIO
+        # === SL / TP ===
+        stop_size = entry_f * BASE_SL_PCT
+        take_size = stop_size * RR_RATIO
 
-    if direction == "UP":
-        sl = round(entry_f - stop_size, 6)
-        tp = round(entry_f + take_size, 6)
-        side = "buy"
-    else:
-        sl = round(entry_f + stop_size, 6)
-        tp = round(entry_f - take_size, 6)
-        side = "sell"
+        if direction == "UP":
+            side = "buy"
+            sl = round(entry_f - stop_size, 6)
+            tp = round(entry_f + take_size, 6)
+        else:
+            side = "sell"
+            sl = round(entry_f + stop_size, 6)
+            tp = round(entry_f - take_size, 6)
 
-    print(f"⚡ OKX SCALP {inst_id} {side} entry={entry_f} sl={sl} tp={tp}")
-    
-    set_okx_leverage(inst_id, LEVERAGE)
+        print(f"⚡ OKX SCALP {inst_id} {side} entry={entry_f} sl={sl} tp={tp}")
 
-    resp = okx_place_order_with_tp_sl(
-        inst_id=inst_id,
-        side=side,
-        entry=entry_f,
-        tp=tp,
-        sl=sl,
-        risk_usdt=MAX_RISK_USDT
-    )
+        # === LEVERAGE ===
+        set_okx_leverage(inst_id, LEVERAGE)
 
-    # отправка уведомления о сделке в тот же Telegram, но с пометкой OKX
-    try:
-        msg = (
+        # === PLACE ORDER ===
+        resp = okx_place_order_with_tp_sl(
+            inst_id=inst_id,
+            side=side,
+            entry=entry_f,
+            tp=tp,
+            sl=sl,
+            risk_usdt=MAX_RISK_USDT
+        )
+
+        send_telegram(
             "⚡ *OKX TRADE*\n"
             f"{inst_id} {side.upper()}\n"
             f"Entry~{entry_f}\n"
             f"TP: {tp}\n"
             f"SL: {sl}"
         )
-        send_telegram(msg)
+
+        trade_global_cooldown_until = time.time() + 180
+        print("🕒 GLOBAL COOLDOWN ACTIVATED (OKX) 180s")
+
+        return jsonify({"status": "ok", "okx_resp": resp}), 200
+
     except Exception as e:
-        print("⚠️ Telegram trade notify error:", e)
+        print("❌ WEBHOOK ERROR:", e)
+        send_telegram(f"❌ *OKX WEBHOOK ERROR*\n{inst_id}\n{e}")
+        return jsonify({"status": "error"}), 500
 
-    # глобальный кулдаун
-    trade_global_cooldown_until = time.time() + 180
-    print("🕒 GLOBAL COOLDOWN ACTIVATED (OKX) 180s")
-
-    return jsonify({"status": "ok", "okx_resp": resp}), 200
-
+    finally:
+        release_instrument_lock(inst_id)
 
 @app.route("/")
 def root():
@@ -536,6 +556,4 @@ if __name__ == "__main__":
     print("🚀 Starting OKX SCALP server")
     port = int(os.getenv("PORT", "8090"))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
-
-
 
