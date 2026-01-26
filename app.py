@@ -244,12 +244,6 @@ def log_block(reason: str, ticker: str, direction: str, payload: dict):
 
     log_signal(ticker, direction, payload.get("tf"), reason)
 
-    send_telegram(
-        f"🚫 *BYBIT BLOCKED*\n"
-        f"{ticker} {direction}\n"
-        f"Entry: {entry}\n"
-        f"Reason: {reason}"
-    )
 
 # =============== 🔔 ВЕБХУК: ТОЛЬКО SCALP ===============
 @app.route("/webhook", methods=["POST"])
@@ -393,8 +387,11 @@ def webhook():
             print("⚠️ Qty <= 0 — торговля пропущена")
             return jsonify({"status": "skipped"}), 200
 
-        place_order_market_with_limit_tp_sl(ticker, side, qty, target_f, stop_f)
-
+        ok = place_order_market_with_limit_tp_sl(ticker, side, qty, target_f, stop_f)
+        if not ok:
+            print("🚫 Trade failed at MARKET stage — no Telegram")
+            return jsonify({"status": "order_failed"}), 200
+        
         send_telegram(
             f"⚡ *BYBIT TRADE*\n"
             f"{ticker} {side}\n"
@@ -403,6 +400,7 @@ def webhook():
             f"SL:{stop_f}"
         )
         log_signal(ticker, direction, "1m", "SCALP", entry_f, stop_f, target_f)
+
 
         # === ACTIVATE GLOBAL COOLDOWN ===
         trade_global_cooldown_until = time.time() + 180  # 3 minutes
@@ -433,7 +431,12 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
             "timeInForce": "IOC"
         }
         entry_resp = bybit_post("/v5/order/create", entry_payload)
+        if entry_resp.get("retCode") != 0:
+            print("❌ MARKET ENTRY FAILED:", entry_resp)
+            return False
+        
         time.sleep(1.2)
+
 
         # Определяем сторону выхода
         exit_side = "Sell" if side == "Buy" else "Buy"
@@ -489,9 +492,11 @@ def place_order_market_with_limit_tp_sl(symbol, side, qty, tp_price, sl_price):
         sl_resp = bybit_post("/v5/order/create", sl_payload)
 
         threading.Thread(target=monitor_and_cleanup, args=(symbol,), daemon=True).start()
-
+        return True
+        
     except Exception as e:
         print("💀 place_order_market_with_limit_tp_sl error:", e)
+        return False
 
 # =============== 🧹 ЧИСТКА СТОПОВ ПОСЛЕ ЗАКРЫТИЯ ===============
 def _min_qty(symbol: str) -> float:
@@ -673,24 +678,3 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
