@@ -647,21 +647,6 @@ def heartbeat_loop():
             print("❌ Heartbeat:", e)
         time.sleep(60)
 
-def backup_log_worker():
-    if not BACKUP_ENABLED: return
-    last_size=-1
-    while True:
-        try:
-            if os.path.exists(LOG_FILE):
-                size=os.path.getsize(LOG_FILE)
-                if (not BACKUP_ONLY_IF_GROWS) or (size>last_size):
-                    ts=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-                    send_telegram_document(LOG_FILE,caption=f"📦 Backup {ts}")
-                    last_size=size
-        except Exception as e:
-            print("❌ Backup error:", e)
-        time.sleep(BACKUP_INTERVAL_MIN*60)
-
 # =============== MAIN ===============
 @app.route("/")
 def root(): return "OK",200
@@ -674,7 +659,7 @@ def health():
 if __name__=="__main__":
     print("🚀 Starting SCALP-only server")
     threading.Thread(target=heartbeat_loop,daemon=True).start()
-    threading.Thread(target=backup_log_worker,daemon=True).start()
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
