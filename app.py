@@ -1,6 +1,6 @@
 # app.py — минимизированный сервер автотрейда (только SCALP)
 
-import os, time, json, threading, csv, hmac, hashlib, html as _html, re, math, requests
+import os, time, json, threading, csv, hmac, hashlib, html as _html, re, math, requests, base64
 from datetime import datetime, timedelta, timezone
 from collections import deque
 from flask import Flask, request, jsonify
@@ -35,6 +35,22 @@ SCALP_ENABLED = os.getenv("SCALP_ENABLED", "true").lower() == "true"
 MAX_RISK_USDT = float(os.getenv("MAX_RISK_USDT", "1"))
 LEVERAGE = float(os.getenv("LEVERAGE", "20"))
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
+
+# OKX (для объединённого single-service деплоя)
+OKX_API_KEY = os.getenv("OKX_API_KEY", "")
+OKX_API_SECRET = os.getenv("OKX_API_SECRET", "")
+OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "")
+OKX_BASE_URL = os.getenv("OKX_BASE_URL", "https://www.okx.com")
+WEBHOOK_SECRET_OKX = os.getenv("WEBHOOK_SECRET_OKX", "")
+TRADE_ENABLED_OKX = os.getenv("TRADE_ENABLED_OKX", "false").lower() == "true"
+MAX_RISK_USDT_OKX = float(os.getenv("MAX_RISK_USDT_OKX", "1"))
+OKX_LEVERAGE = float(os.getenv("OKX_LEVERAGE", "20"))
+OKX_BASE_SL_PCT = float(os.getenv("OKX_BASE_SL_PCT", "0.003"))
+OKX_RR_RATIO = float(os.getenv("OKX_RR_RATIO", "2.4"))
+OKX_LONG_DAYS_ENV = os.getenv("OKX_LONG_DAYS", "0,1,2,3,4,5,6")
+OKX_SHORT_DAYS_ENV = os.getenv("OKX_SHORT_DAYS", "0,1,2,3,4,5,6")
+OKX_LONG_HOURS_ENV = os.getenv("OKX_LONG_HOURS", "0-3,3-6,6-9,9-12,12-15,15-18,18-21,21-24")
+OKX_SHORT_HOURS_ENV = os.getenv("OKX_SHORT_HOURS", "0-3,3-6,6-9,9-12,12-15,15-18,18-21,21-24")
 # БАЗОВЫЕ НАСТРОЙКИ SL/TP ДЛЯ SCALP
 BASE_SL_PCT = 0.003   # 0.3% от цены входа
 RR_RATIO    = 2.4     # TP = SL * 2.4
@@ -45,6 +61,7 @@ PAUSE_MINUTES = 30
 loss_streak = {}
 loss_streak_reset_time = {}
 trade_global_cooldown_until = 0
+okx_trade_global_cooldown_until = 0
 
 LOG_FILE = "/tmp/signals_log.csv"
 
@@ -634,6 +651,269 @@ def monitor_closed_trades():
             print("💀 monitor_closed_trades crashed:", e)
             time.sleep(15)
 
+
+# =============== OKX HELPERS ===============
+instrument_locks = {}
+instrument_locks_lock = threading.Lock()
+_okx_inst_cache = {}
+_okx_pos_mode = None
+
+OKX_LONG_DAYS_SET = parse_days(OKX_LONG_DAYS_ENV)
+OKX_SHORT_DAYS_SET = parse_days(OKX_SHORT_DAYS_ENV)
+OKX_LONG_HOUR_RANGES = parse_hours(OKX_LONG_HOURS_ENV)
+OKX_SHORT_HOUR_RANGES = parse_hours(OKX_SHORT_HOURS_ENV)
+
+def acquire_instrument_lock(inst_id: str, ttl: int = 30) -> bool:
+    now = time.time()
+    with instrument_locks_lock:
+        ts = instrument_locks.get(inst_id, 0)
+        if now < ts:
+            return False
+        instrument_locks[inst_id] = now + ttl
+        return True
+
+def release_instrument_lock(inst_id: str):
+    with instrument_locks_lock:
+        instrument_locks.pop(inst_id, None)
+
+def _okx_timestamp() -> str:
+    now = datetime.now(timezone.utc)
+    return now.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+def _okx_sign(method: str, path: str, body: str = ""):
+    ts = _okx_timestamp()
+    prehash = f"{ts}{method.upper()}{path}{body}"
+    sign = base64.b64encode(
+        hmac.new(OKX_API_SECRET.encode(), prehash.encode(), digestmod="sha256").digest()
+    ).decode()
+    return {
+        "OK-ACCESS-KEY": OKX_API_KEY,
+        "OK-ACCESS-SIGN": sign,
+        "OK-ACCESS-TIMESTAMP": ts,
+        "OK-ACCESS-PASSPHRASE": OKX_PASSPHRASE,
+        "Content-Type": "application/json",
+    }
+
+def okx_private_get(path: str, params: dict = None, timeout: int = 10):
+    qs = ""
+    if params:
+        parts = [f"{k}={v}" for k, v in params.items()]
+        qs = "?" + "&".join(parts)
+    headers = _okx_sign("GET", path, "")
+    url = OKX_BASE_URL.rstrip("/") + path + qs
+    r = requests.get(url, headers=headers, timeout=timeout)
+    if DEBUG:
+        print("GET", url, r.status_code, r.text[:400])
+    return r.json()
+
+def okx_private_post(path: str, payload: dict, timeout: int = 10):
+    body = json.dumps(payload, separators=(",", ":"))
+    headers = _okx_sign("POST", path, body)
+    url = OKX_BASE_URL.rstrip("/") + path
+    r = requests.post(url, headers=headers, data=body, timeout=timeout)
+    text_preview = r.text[:400]
+    if DEBUG:
+        print("POST", url, "payload:", payload, "resp:", r.status_code, text_preview)
+    try:
+        j = r.json()
+    except Exception:
+        print("❌ OKX raw response (not JSON):", text_preview)
+        return {"http": r.status_code, "text": r.text}
+    if j.get("code") not in ("0", 0):
+        print("❌ OKX error:", j)
+    else:
+        print("✅ OKX OK:", j)
+    return j
+
+def tv_ticker_to_okx_inst_id(tv_ticker: str) -> str:
+    s = tv_ticker.upper().replace("OKX:", "").replace(".P", "")
+    if s.endswith("USDT"):
+        base = s[:-4]
+        return f"{base}-USDT-SWAP"
+    return s
+
+def get_okx_inst_info(inst_id: str):
+    if inst_id in _okx_inst_cache:
+        return _okx_inst_cache[inst_id]
+    resp = requests.get(
+        OKX_BASE_URL.rstrip("/") + "/api/v5/public/instruments",
+        params={"instType": "SWAP", "instId": inst_id},
+        timeout=10,
+    ).json()
+    data = (resp.get("data") or resp.get("result") or [])
+    if not data:
+        raise RuntimeError(f"Нет данных по инструменту {inst_id}: {resp}")
+    info = data[0]
+    _okx_inst_cache[inst_id] = info
+    return info
+
+def get_okx_pos_mode() -> str:
+    global _okx_pos_mode
+    if _okx_pos_mode:
+        return _okx_pos_mode
+    try:
+        cfg = okx_private_get("/api/v5/account/config", timeout=10)
+        data = cfg.get("data") or []
+        if data:
+            raw = (data[0].get("posMode") or "net").lower()
+            if "long" in raw and "short" in raw:
+                _okx_pos_mode = "long_short"
+            elif "long_short" in raw:
+                _okx_pos_mode = "long_short"
+            else:
+                _okx_pos_mode = "net"
+        else:
+            _okx_pos_mode = "net"
+        print("🔧 OKX posMode detected:", _okx_pos_mode)
+    except Exception as e:
+        print("⚠️ Cannot detect posMode, fallback to 'net':", e)
+        _okx_pos_mode = "net"
+    return _okx_pos_mode
+
+def set_okx_leverage(inst_id: str, leverage: float):
+    try:
+        payload = {"instId": inst_id, "lever": str(leverage), "mgnMode": "cross"}
+        resp = okx_private_post("/api/v5/account/set-leverage", payload)
+        print("✅ OKX leverage response:", resp)
+    except Exception as e:
+        print("❌ set_okx_leverage exception:", e)
+
+def calc_sz_from_risk_okx(entry, stop, risk_usdt, inst_id: str) -> float:
+    try:
+        entry, stop, risk_usdt = float(entry), float(stop), float(risk_usdt)
+    except Exception:
+        return 0.0
+    if entry <= 0 or stop <= 0 or risk_usdt <= 0:
+        return 0.0
+    info = get_okx_inst_info(inst_id)
+    ct_val = float(info.get("ctVal", "0.001"))
+    min_sz = float(info.get("minSz", "1"))
+    lot_sz = float(info.get("lotSz", min_sz))
+    price_risk = abs(entry - stop)
+    if price_risk <= 1e-12:
+        return 0.0
+    risk_per_contract = price_risk * ct_val
+    raw_sz = risk_usdt / risk_per_contract
+    stepped = math.floor(raw_sz / lot_sz) * lot_sz
+    sz = max(min_sz, stepped)
+    return float(f"{sz:.4f}")
+
+def okx_has_position(inst_id: str) -> bool:
+    j = okx_private_get("/api/v5/account/positions", {"instType": "SWAP", "instId": inst_id})
+    for p in j.get("data", []):
+        pos = float(p.get("pos", "0"))
+        avail = float(p.get("availPos", "0"))
+        if abs(pos) > 0 or abs(avail) > 0:
+            return True
+    return False
+
+def okx_has_open_orders(inst_id: str) -> bool:
+    j = okx_private_get("/api/v5/trade/orders-pending", {"instType": "SWAP", "instId": inst_id})
+    return bool(j.get("data"))
+
+def okx_has_algo_orders(inst_id: str) -> bool:
+    j = okx_private_get("/api/v5/trade/orders-algo-pending", {"instType": "SWAP", "instId": inst_id})
+    return bool(j.get("data"))
+
+def okx_place_order_with_tp_sl(inst_id: str, side: str, entry: float, tp: float, sl: float, risk_usdt: float):
+    sz = calc_sz_from_risk_okx(entry, sl, risk_usdt, inst_id)
+    if sz <= 0:
+        msg = f"{inst_id}: sz <= 0, сделка пропущена (risk={risk_usdt}, entry={entry}, sl={sl})"
+        print("⚠️", msg)
+        send_telegram("⚠️ *OKX SIZE ERROR*\n" + msg)
+        return {"error": "bad_size"}
+    payload = {
+        "instId": inst_id,
+        "tdMode": "cross",
+        "side": side,
+        "ordType": "market",
+        "sz": str(sz),
+        "attachAlgoOrds": [{
+            "tpTriggerPx": str(tp),
+            "tpOrdPx": str(tp),
+            "tpTriggerPxType": "last",
+            "slTriggerPx": str(sl),
+            "slOrdPx": str(sl),
+            "slTriggerPxType": "last",
+        }],
+    }
+    if get_okx_pos_mode() == "long_short":
+        payload["posSide"] = "long" if side == "buy" else "short"
+    resp = okx_private_post("/api/v5/trade/order", payload)
+    return resp
+
+def parse_payload_okx(req):
+    data = request.get_json(silent=True) or {}
+    raw_ticker = str(data.get("ticker", "")).upper()
+    return {
+        "type": str(data.get("type", "")).upper(),
+        "tv_ticker": raw_ticker,
+        "instId": tv_ticker_to_okx_inst_id(raw_ticker),
+        "direction": str(data.get("direction", "")).upper(),
+        "entry": data.get("entry"),
+        "tf": str(data.get("tf", "1m")).lower(),
+    }
+
+@app.route("/webhook_okx", methods=["POST"])
+def webhook_okx():
+    global okx_trade_global_cooldown_until
+    if WEBHOOK_SECRET_OKX and request.args.get("key", "") != WEBHOOK_SECRET_OKX:
+        return "forbidden", 403
+    payload = parse_payload_okx(request)
+    typ = payload["type"]
+    inst_id = payload["instId"]
+    direction = payload["direction"]
+    entry = payload["entry"]
+    if not acquire_instrument_lock(inst_id, ttl=60):
+        return jsonify({"status": "blocked_local_lock"}), 200
+    try:
+        now_dt = datetime.utcnow() + timedelta(hours=2)
+        wd = now_dt.weekday()
+        hour = now_dt.hour
+        if direction == "UP":
+            days_set = OKX_LONG_DAYS_SET
+            hour_ranges = OKX_LONG_HOUR_RANGES
+        else:
+            days_set = OKX_SHORT_DAYS_SET
+            hour_ranges = OKX_SHORT_HOUR_RANGES
+        if days_set and wd not in days_set:
+            return jsonify({"status": "blocked_day"}), 200
+        if not hour_allowed(hour, hour_ranges):
+            return jsonify({"status": "blocked_hour"}), 200
+        if typ != "SCALP":
+            return jsonify({"status": "ignored"}), 200
+        now = time.time()
+        if now < okx_trade_global_cooldown_until:
+            return jsonify({"status": "cooldown"}), 200
+        if okx_has_position(inst_id) or okx_has_open_orders(inst_id) or okx_has_algo_orders(inst_id):
+            return jsonify({"status": "blocked_existing_state"}), 200
+        if not TRADE_ENABLED_OKX:
+            return jsonify({"status": "trade_disabled"}), 200
+        try:
+            entry_f = float(entry)
+        except Exception:
+            return jsonify({"status": "bad_entry"}), 200
+        stop_size = entry_f * OKX_BASE_SL_PCT
+        take_size = stop_size * OKX_RR_RATIO
+        if direction == "UP":
+            side = "buy"
+            sl = round(entry_f - stop_size, 6)
+            tp = round(entry_f + take_size, 6)
+        else:
+            side = "sell"
+            sl = round(entry_f + stop_size, 6)
+            tp = round(entry_f - take_size, 6)
+        set_okx_leverage(inst_id, OKX_LEVERAGE)
+        resp = okx_place_order_with_tp_sl(inst_id, side, entry_f, tp, sl, MAX_RISK_USDT_OKX)
+        okx_trade_global_cooldown_until = time.time() + 180
+        return jsonify({"status": "ok", "okx_resp": resp}), 200
+    except Exception as e:
+        print("❌ WEBHOOK OKX ERROR:", e)
+        return jsonify({"status": "error"}), 500
+    finally:
+        release_instrument_lock(inst_id)
+
+
 # =============== 🧩 СЕРВИСНЫЕ ВОРКЕРЫ ===============
 def heartbeat_loop():
     sent_today=None
@@ -662,4 +942,3 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
-
