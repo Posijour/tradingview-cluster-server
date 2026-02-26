@@ -157,7 +157,7 @@ def send_telegram_document(filepath: str, caption: str = ""):
 # =============== 📜 ЛОГИРОВАНИЕ ===============
 log_lock = threading.Lock()
 def log_signal(ticker, direction, tf, sig_type, entry=None, stop=None, target=None):
-    row = [datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"), ticker, direction, tf, sig_type, entry or "", stop or "", target or ""]
+    row = [datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"), ticker, direction, tf, sig_type, entry or "", stop or "", target or ""]
     try:
         with log_lock:
             create_header = not os.path.exists(LOG_FILE)
@@ -291,7 +291,7 @@ def webhook():
         return jsonify({"status": "ignored"}), 200
 
     # === FILTER: DAY OF WEEK + DIRECTION ===
-    now_local = datetime.utcnow() + timedelta(hours=2)
+    now_local = datetime.now(timezone.utc) + timedelta(hours=2)
     weekday = now_local.weekday()  # 0=Mon ... 6=Sun
     hour = now_local.hour          # 0..23
 
@@ -867,7 +867,7 @@ def webhook_okx():
     if not acquire_instrument_lock(inst_id, ttl=60):
         return jsonify({"status": "blocked_local_lock"}), 200
     try:
-        now_dt = datetime.utcnow() + timedelta(hours=2)
+        now_dt = datetime.now(timezone.utc) + timedelta(hours=2)
         wd = now_dt.weekday()
         hour = now_dt.hour
         if direction == "UP":
@@ -919,7 +919,7 @@ def heartbeat_loop():
     sent_today=None
     while True:
         try:
-            now=datetime.utcnow()+timedelta(hours=2)
+            now = datetime.now(timezone.utc) + timedelta(hours=2)
             if now.hour==3 and sent_today!=now.date():
                 send_telegram(f"💙 *HEARTBEAT*\nServer alive {now.strftime('%H:%M')}")
                 sent_today=now.date()
@@ -942,3 +942,4 @@ if __name__=="__main__":
     threading.Thread(target=monitor_closed_trades,daemon=True).start()
     port=int(os.getenv("PORT","8080"))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
+
